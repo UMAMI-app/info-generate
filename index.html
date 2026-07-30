@@ -217,7 +217,7 @@
   <!-- STEP 4 -->
   <div class="card" id="outputCard" style="display:none;">
     <p class="step-title"><span class="step-num">4</span>テキスト生成</p>
-    <textarea id="output" readonly></textarea>
+    <textarea id="output"></textarea>
     <div class="row" style="margin-top:10px;">
       <button class="secondary" id="copyBtn" type="button">コピーする</button>
       <span class="copy-ok" id="copyOk">✔︎ コピーしました</span>
@@ -423,7 +423,9 @@
     const t = tag||'', n = name||'';
     if (/凍結|冷凍|冷|空輸|乾燥|干し|燻製|加工/.test(t) || /海苔|燻製|干物/.test(n)) return {dai:'冷凍・加工品', naka:''};
     if (/村産|農園|産直/.test(t) || /メークイン|ダンシャク|きたあかり|テストロイヤー|デストロイヤー|インカ|いも|芋|ねぎ|ネギ|大根|人参|野菜/.test(n)) return {dai:'青果', naka:''};
-    if (/アワビ|サザエ|ホタテ|カキ|牡蠣|ハマグリ|アサリ|シジミ|カニ|エビ|ロブスター|ウニ/.test(n)) return {dai:'貝・甲殻類', naka:''};
+    // タグに「活貝」「activeカニ」等、貝・カニ・エビ・ウニを示す語がある場合は、
+    // 魚種名が個別の品種リストに無くても貝・甲殻類に分類する
+    if (/アワビ|サザエ|ホタテ|カキ|牡蠣|ハマグリ|アサリ|シジミ|カニ|エビ|ロブスター|ウニ/.test(n) || /貝|カニ|蟹|エビ|海老|ウニ/.test(t)) return {dai:'貝・甲殻類', naka:''};
     if (/活〆|活魚/.test(t)) return {dai:'朝〆鮮魚', naka:'養殖活魚🐟神経〆納品📦'};
     if (/江戸前|神経締め|神経〆|脳〆/.test(t)) return {dai:'朝〆鮮魚', naka:'神経締め‼️'};
     return {dai:'鮮魚', naka:''};
@@ -784,6 +786,7 @@
         <li style="margin-bottom:6px;">
           ${escapeHtml(n)}
           <div class="row" style="margin-top:4px;">
+            <button class="secondary tiny" data-act="copy" data-ni="${ni}" type="button">コピーする</button>
             <button class="secondary tiny" data-act="cat" data-ni="${ni}" type="button">カテゴリーにする</button>
             <button class="secondary tiny" data-act="del" data-ni="${ni}" type="button">削除する</button>
           </div>
@@ -794,6 +797,20 @@
         btn.addEventListener('click', ()=>{
           const ni = +btn.dataset.ni, act = btn.dataset.act;
           const note = allNotesRaw[ni];
+          if (act === 'copy'){
+            const original = btn.textContent;
+            const showDone = ()=>{ btn.textContent = 'コピーしました'; setTimeout(()=>{ btn.textContent = original; }, 1500); };
+            navigator.clipboard.writeText(note).then(showDone).catch(()=>{
+              const ta = document.createElement('textarea');
+              ta.value = note;
+              document.body.appendChild(ta);
+              ta.select();
+              document.execCommand('copy');
+              document.body.removeChild(ta);
+              showDone();
+            });
+            return;
+          }
           if (act === 'cat'){
             const { name, emoji } = extractCategoryInfoFromLine(note);
             if (name && !categories.some(c=>c.name===name)){
