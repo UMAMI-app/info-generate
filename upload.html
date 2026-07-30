@@ -1629,42 +1629,123 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       return K.extractNameAndOrigin(group.name);
     }
 
-    // 由良ウニは、原稿にその日の情報が無くても必ずこの5種を記載する
-    const YURA_BRANDS = [
-      { grade:'SP', name:'廣田丸' },
-      { grade:'SP', name:'与助' },
-      { grade:'SP', name:'山口水産' },
-      { grade:'上', name:'山由丸' },
-      { grade:'上', name:'秋山丸' },
-    ];
+    // ---------------- 由良ウニ ----------------
+    // 由良ウニは原稿にあるものだけを記載する(原稿に無い銘柄は載せない)。
+    // 原稿の書き方は日によってバラバラなので、行ごとに「SP/上/並」のどれかを判定し、
+    // 同じグレード内で価格・サイズ(または注記)が一致するものは名前を「／」で束ねて1行にする。
+    const YURA_GRADE_ORDER = ['SP', '上', '並'];
+    const YURA_GRADE_MARKER = { 'SP':'⭐️', '上':'○', '並':'○' };
+    // 原稿の表記(80gだけ等)に関わらず、廣田丸は必ずこのサイズ表記に統一する
+    const YURA_FIXED_SIZE = { '廣田丸':'70〜80g' };
 
-    function buildYuraItem(brand, v, opts){
-      const qtyPart = (v && v.qty) ? `→ ${v.qty}枚あり` : '';
-      const marker = brand.grade === 'SP' ? '⭐️' : '○';
-      const lines = [` ${marker} ${brand.grade} ) ${brand.name}${qtyPart}`];
-      if (!v) return lines; // 原稿にその日の記載が無い場合は名前だけ
+    function normalizeYuraSize(s){
+      return s.trim().replace(/前後$/, '').replace(/-/g, '〜');
+    }
 
-      let rest = v.raw;
-      if (brand.grade === 'SP' && rest.startsWith('SP')) rest = rest.slice(2);
-      else if (brand.grade === '上' && rest.startsWith('上')) rest = rest.slice(1).trim();
+    // 1行が由良ウニの行かどうか判定してパースする。該当しなければnullを返す
+    // (「A商品45gSP1枚9,000」のような通常ウニ商品の行と誤認しないよう、
+    //  名前部分に数字が含まれる場合はここでのSP後置判定からは除外する)
+    function parseYuraLine(raw, opts){
+      const s = raw.trim();
 
-      // 「SP与助  →次回木曜日着」のように同じ行内に埋め込まれた矢印の注記を切り出す
-      let inlineArrowNote = '';
+      // 特殊パターン:「(上)(並) 入荷有り 価格未定」のように名前が無く、複数グレード共通の注記だけの行
+      const bracketMatch = s.match(/^((?:[（(](?:SP|上|並)[)）])+)\s*(.+)$/);
+      if (bracketMatch){
+        const grades = [...bracketMatch[1].matchAll(/[（(](SP|上|並)[)）]/g)].map(m=>m[1]);
+        const status = bracketMatch[2].trim().replace(/有り/g,'あり').replace(/\s+/g,'→');
+        return { kind:'status', grades, status };
+      }
+
+      let grade = null, rest = null, name = null;
+      if (/^SP/.test(s)) { grade = 'SP'; rest = s.slice(2); }
+      else if (/^上[\s　]?/.test(s)) { grade = '上'; rest = s.replace(/^上[\s　]?/, ''); }
+      else if (/^並[\s　]?/.test(s)) { grade = '並'; rest = s.replace(/^並[\s　]?/, ''); }
+      else {
+        // 「廣田丸SP約80g...」「与助/他SP 約70g...」のように名前の後ろにSPが付くパターン
+        const spIdx = s.indexOf('SP');
+        if (spIdx > 0 && !/\d/.test(s.slice(0, spIdx))){
+          grade = 'SP';
+          name = s.slice(0, spIdx).trim();
+          rest = s.slice(spIdx + 2);
+        }
+      }
+      if (grade === null) return null; // 由良ウニの行ではない
+
+      rest = (rest || '').trim();
+
+      // 「→次回木曜日着」のような矢印の注記を切り出す
+      let arrowNote = null;
       const arrowIdx = rest.indexOf('→');
       if (arrowIdx !== -1){
-        inlineArrowNote = rest.slice(arrowIdx).trim();
+        arrowNote = rest.slice(arrowIdx).trim();
         rest = rest.slice(0, arrowIdx).trim();
       }
 
-      const m = rest.match(/^(\D+?)(\d\S*)\s*1枚([\d,]+)/);
-      if (m){
-        let size = m[2].trim().replace(/前後$/, '').replace(/-/g, '〜');
-        const price = K.calcPrice(parseInt(m[3].replace(/,/g,''),10), opts.threshold, opts.lowMult, opts.highMult, opts.unit);
-        lines.push(`${fmtYen(price)}円/枚(約${size})`);
+      let size = null, price = null;
+      if (name === null){
+        // 「約」が付いていても(「約80g」等)サイズとして認識できるようにする
+        const m = rest.match(/^(\D+?)約?(\d\S*)\s*1枚([\d,]+)/);
+        if (m){
+          name = m[1].trim();
+          size = normalizeYuraSize(m[2]);
+          price = K.calcPrice(parseInt(m[3].replace(/,/g,''),10), opts.threshold, opts.lowMult, opts.highMult, opts.unit);
+        } else {
+          name = rest;
+        }
+      } else {
+        const m = rest.match(/^約?(\d\S*)\s*1枚([\d,]+)/);
+        if (m){
+          size = normalizeYuraSize(m[1]);
+          price = K.calcPrice(parseInt(m[2].replace(/,/g,''),10), opts.threshold, opts.lowMult, opts.highMult, opts.unit);
+        }
       }
-      // 「→次回木曜日着」のような矢印の注記は、価格の有無・同じ行か別行かに関わらず必ず次の行に記載する
-      const arrowNote = inlineArrowNote || v.arrowNote;
-      if (arrowNote) lines.push(arrowNote);
+
+      // 名前に含まれる「/」は複数銘柄をまとめた表記なので、全角「／」区切りの名前リストにする
+      const names = name.split('/').map(x=>x.trim()).filter(Boolean);
+      if (names.includes('廣田丸')) size = YURA_FIXED_SIZE['廣田丸'];
+
+      return { kind:'item', grade, names, size, price, arrowNote };
+    }
+
+    // 由良ウニの各行(パース済み)から出力ブロックを組み立てる。
+    // 同一グレード内で「サイズ+価格」または「注記」が一致するものは名前を束ねて1行にまとめる。
+    function buildYuraSection(parsedLines){
+      const items = parsedLines.filter(p => p.kind === 'item');
+      const statuses = parsedLines.filter(p => p.kind === 'status');
+
+      const byGrade = {};
+      items.forEach(it => { (byGrade[it.grade] = byGrade[it.grade] || []).push(it); });
+
+      const blocks = [];
+      YURA_GRADE_ORDER.forEach(grade => {
+        const list = byGrade[grade];
+        if (!list || !list.length) return;
+        const merged = [];
+        list.forEach(it => {
+          const key = it.price != null ? `${it.size}|${it.price}` : `note:${it.arrowNote || ''}`;
+          let bucket = merged.find(b => b.key === key);
+          if (!bucket){ bucket = { key, names:[], size: it.size, price: it.price, arrowNote: it.arrowNote }; merged.push(bucket); }
+          bucket.names.push(...it.names);
+        });
+        merged.forEach(grp => {
+          const marker = YURA_GRADE_MARKER[grade];
+          const block = [` ${marker} ${grade} ) ${grp.names.join('／')}`];
+          if (grp.price != null) block.push(`${fmtYen(grp.price)}円/枚(約${grp.size})`);
+          if (grp.arrowNote) block.push(grp.arrowNote);
+          blocks.push(block);
+        });
+      });
+
+      statuses.forEach(st => {
+        const marker = st.grades.includes('SP') ? '⭐️' : '○';
+        blocks.push([` ${marker} ${st.grades.join(' ) ')} ) ${st.status}`]);
+      });
+
+      const lines = [];
+      blocks.forEach((block, i) => {
+        lines.push(...block);
+        if (i < blocks.length - 1) lines.push('');
+      });
       return lines;
     }
 
@@ -1774,17 +1855,12 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         }
 
         if (group.name === 'ウニ'){
-          const yuraVariants = group.variants.filter(v => /^SP/.test(v.raw) || /^上\s?/.test(v.raw));
-          const regularVariants = group.variants.filter(v => !yuraVariants.includes(v));
+          const parsedYura = group.variants.map(v => ({ v, p: parseYuraLine(v.raw, opts) }));
+          const yuraParsedLines = parsedYura.filter(x => x.p).map(x => x.p);
+          const regularVariants = parsedYura.filter(x => !x.p).map(x => x.v);
 
-          // 由良ウニのセクションは「・ウニ」の記載が原稿にあれば必ず出す。
-          // 5銘柄は、その日の情報（価格など）が原稿に無くても名前だけは必ず記載する。
-          YURA_BRANDS.forEach((brand, i) => {
-            const v = yuraVariants.find(vv => vv.raw.includes(brand.name));
-            const built = buildYuraItem(brand, v, opts);
-            yuraLines.push(...built);
-            if (i < YURA_BRANDS.length - 1) yuraLines.push('');
-          });
+          // 由良ウニは原稿にある分だけ記載する(原稿に無い銘柄は載せない)
+          yuraLines.push(...buildYuraSection(yuraParsedLines));
 
           const letters = ['A','B','C','D','E','F'];
           regularVariants.forEach((v,i) => {
