@@ -126,6 +126,14 @@
      スマホ幅ではすべてのフォーム部品を16px以上にしてズームを防ぐ */
   @media (max-width:700px){
     textarea, input, select, [contenteditable] { font-size:16px !important; }
+    /* スマホ幅では大カテゴリ・中カテゴリの表示を頭2文字ぶんに切り詰めてスペースを確保する
+       (中身の値は変わらない。表示上、はみ出た部分が隠れるだけ) */
+    #previewTable select[data-field="dai"]{
+      width:2.6em; padding-left:2px; padding-right:2px; overflow:hidden; white-space:nowrap;
+    }
+    #previewTable input[data-field="naka"]{
+      width:2.2em; padding-left:2px; padding-right:2px; overflow:hidden; white-space:nowrap; text-overflow:clip;
+    }
   }
 
   .tabs{display:flex; gap:24px; margin-bottom:18px; border-bottom:1px solid var(--border); overflow-x:auto;}
@@ -161,7 +169,9 @@
     </div>
     <div id="fileParseError" class="placeholder-note" style="display:none; color:#b00020; background:#fdecea; border-color:#f5c2c0;"></div>
 
-    <details style="margin-top:16px;">
+    <!-- 「表をコピー＆ペーストして読み込む」機能はUIから非表示にしただけで、
+         中身(要素・処理)はそのまま残してある。復活させる時はこのdisplay:noneを外すだけでよい。 -->
+    <details style="margin-top:16px; display:none;">
       <summary style="cursor:pointer; color:var(--sub); font-size:13px;">従来通り、表をコピー＆ペーストして読み込む</summary>
       <div style="margin-top:10px;">
         <textarea id="pasteArea"></textarea>
@@ -208,25 +218,12 @@
     <p class="step-title"><span class="step-num">3</span>価格ルールで一括計算</p>
     <div class="controls">
       <div class="field">
-        <label>しきい値（円）</label>
-        <input type="number" id="thresholdInput" value="10000" step="100" min="0">
-      </div>
-      <div class="field">
-        <label>しきい値未満の倍率</label>
+        <label>10,000円値未満の倍率</label>
         <input type="number" id="lowMultInput" value="1.15" step="0.01" min="0">
       </div>
       <div class="field">
-        <label>しきい値以上の倍率</label>
+        <label>10,000円以上の倍率</label>
         <input type="number" id="highMultInput" value="1.1" step="0.01" min="0">
-      </div>
-      <div class="field">
-        <label>端数処理（切り上げ単位）</label>
-        <select id="roundSelect">
-          <option value="1">1円単位</option>
-          <option value="10">10円単位</option>
-          <option value="50">50円単位</option>
-          <option value="100" selected>100円単位</option>
-        </select>
       </div>
       <div class="field">
         <label>&nbsp;</label>
@@ -279,11 +276,12 @@
   const newCatList = document.getElementById('newCatList');
   const markupCard = document.getElementById('markupCard');
   const outputCard = document.getElementById('outputCard');
-  const thresholdInput = document.getElementById('thresholdInput');
   const lowMultInput = document.getElementById('lowMultInput');
   const highMultInput = document.getElementById('highMultInput');
-  const roundSelect = document.getElementById('roundSelect');
   const calcBtn = document.getElementById('calcBtn');
+  // しきい値・端数処理はUIから削除し、以下の固定値を使う(いつでもこの値を変えれば挙動を調整可能)
+  const FIXED_THRESHOLD = 10000;
+  const FIXED_ROUND_UNIT = 100;
   const output = document.getElementById('output');
   const copyBtn = document.getElementById('copyBtn');
   const copyOk = document.getElementById('copyOk');
@@ -292,6 +290,15 @@
   const subnoteList = document.getElementById('subnoteList');
   const addSubnoteBtn = document.getElementById('addSubnoteBtn');
   const addItemBtn = document.getElementById('addItemBtn');
+
+  // 品目として認識できなくても「未認識行」に出さず、無条件で捨てて良い定型文
+  const JUNK_NOTES = [
+    '‼️冷凍品＆養殖活魚＆定番品‼️',
+    '※数に限りがありますので先着順にてよろしくお願い致します‼️',
+    '現時点の情報になります‼️‼️その他、当日入荷あります。各担当まで‼️',
+    '養殖活魚🐟神経締め納品📦【渦巻処理🌀】ご希望の方は注文時にお知らせください📢',
+  ];
+  const isJunkNote = (t)=> JUNK_NOTES.includes((t||'').trim());
 
   let allItems = []; // flattened, each item carries dai/naka/tag/name/origin/sizeMain/comment/price/excluded
   let allNotesRaw = [];
@@ -893,7 +900,7 @@
       <li style="margin-bottom:8px;">
         「${escapeHtml(det.name)}」を新しいカテゴリーとして自動的に使用しています。
         <div class="row" style="margin-top:4px;">
-          <button class="secondary tiny" data-act="reject" data-i="${i}" type="button">カテゴリーではない（取り消す）</button>
+          <button class="secondary tiny" data-act="reject" data-i="${i}" type="button">カテゴリーではない</button>
         </div>
       </li>
     `).join('');
@@ -933,11 +940,13 @@
     const {grid, blocks} = parseGrid(text);
     const res = extractItemsFromGrid(grid, blocks);
     allItems = res.items;
-    allNotesRaw = res.notes;
+    allNotesRaw = res.notes.filter(n=>!isJunkNote(n));
     // 品目名が本文に一つも登場しないメモは、どのカテゴリーにも自動で載せる場所が無いので、
     // 静かに消えてしまわないよう「認識できない行」に回して人の目で確認できるようにする
+    // (ただしJUNK_NOTESに該当する定型文は無条件で削除する)
     allPartNotes = [];
     res.partNotes.forEach(note=>{
+      if (isJunkNote(note)) return;
       const hasMatch = allItems.some(it=>it.name && note.includes(it.name));
       if (hasMatch) allPartNotes.push(note); else allNotesRaw.push(note);
     });
@@ -1086,10 +1095,10 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
   });
 
   calcBtn.addEventListener('click', ()=>{
-    const threshold = parseFloat(thresholdInput.value) || 0;
+    const threshold = FIXED_THRESHOLD;
     const lowMult = parseFloat(lowMultInput.value) || 1;
     const highMult = parseFloat(highMultInput.value) || 1;
-    const unit = parseInt(roundSelect.value, 10) || 1;
+    const unit = FIXED_ROUND_UNIT;
     allItems.forEach(it=>{
       if (it.price.value != null){
         const mult = it.price.value < threshold ? lowMult : highMult;
