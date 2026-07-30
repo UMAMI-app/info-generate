@@ -246,6 +246,7 @@
 
   <div class="tab-panel" id="panel-kadokura">
     <div class="card">
+      <p class="step-title"><span class="step-num">1</span>原稿を貼り付け</p>
       <textarea id="pasteAreaK"></textarea>
       <div class="row" style="margin-top:10px;">
         <button id="genBtnK">変換</button>
@@ -253,11 +254,12 @@
       </div>
     </div>
     <div class="card" id="outputCardK" style="display:none;">
+      <p class="step-title"><span class="step-num">2</span>テキスト生成</p>
       <div class="row" style="margin-bottom:10px;">
         <button class="secondary" id="copyBtnK" type="button">コピーする</button>
         <span class="copy-ok" id="copyOkK">✔︎ コピーしました</span>
       </div>
-      <textarea id="outputK" readonly></textarea>
+      <textarea id="outputK"></textarea>
     </div>
   </div><!-- /panel-kadokura -->
 
@@ -1426,7 +1428,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     }
 
     // ---------------- category classification ----------------
-    const ASAJIME_SPECIES = ['ハモ','メイタカレイ','天然ヒラメ','オコゼ','活天然タイ','アコウ','活イシダイ'];
+    const ASAJIME_SPECIES = ['ハモ','メイタカレイ','天然ヒラメ','オコゼ','活天然タイ','アコウ','活イシダイ','アマガレイ'];
     const CATEGORY_ORDER = ['朝締め','ウニ','甲殻類・貝','青物・大衆魚','季節魚・回遊魚','高級魚・白身','細物','イカ','白子・内臓','加工品'];
     const CATEGORY_EMOJI = {
       '朝締め':'✨','ウニ':'💥','甲殻類・貝':'🦪','貝':'🦪',
@@ -1440,7 +1442,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       if (/ちりめん|しらす/.test(n)) return '加工品';
       if (/イカ/.test(n)) return 'イカ';
       if (/ガニ|カニ/.test(n)) return '甲殻類';
-      if (/ガキ|オイスター|トリ貝|牡蠣/.test(n)) return '貝';
+      // 「貝」の字が付く品目は無条件でこのカテゴリーに入れる(オイスター/牡蠣のように「貝」の字が無いものも含める)
+      if (/貝|ガキ|オイスター|牡蠣/.test(n)) return '貝';
       // 青物・大衆魚：アジ類・イワシ類・サバ類など日常的で手頃な魚
       if (/アジ|イワシ|サバ/.test(n)) return '青物・大衆魚';
       // 季節魚・回遊魚：カツオ類（ガツオ）・マグロ幼魚・サワラ・サゴシ・ブリ系・シイラなど季節性の強い回遊魚
@@ -1637,7 +1640,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
 
     function buildYuraItem(brand, v, opts){
       const qtyPart = (v && v.qty) ? `→ ${v.qty}枚あり` : '';
-      const lines = [` ○ ${brand.grade} ) ${brand.name}${qtyPart}`];
+      const marker = brand.grade === 'SP' ? '⭐️' : '○';
+      const lines = [` ${marker} ${brand.grade} ) ${brand.name}${qtyPart}`];
       if (!v) return lines; // 原稿にその日の記載が無い場合は名前だけ
 
       let rest = v.raw;
@@ -1673,11 +1677,14 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       const price = K.calcPrice(parseInt(m[3].replace(/,/g,''),10), opts.threshold, opts.lowMult, opts.highMult, opts.unit);
       const qtyLine = v.qty ? [`→${v.qty}枚あり`] : [];
       return [
-        `🔸${letter})${namePart}ウニ${grade}`,
+        `🔸${namePart}ウニ${grade}`,
         `${size} - ${fmtYen(price)}円/枚`,
         ...qtyLine,
       ];
     }
+
+    // 名前の文字数に関わらず、産地は必ず改行して次の行に記載したい品目
+    const FORCE_ORIGIN_NEWLINE_PREFIXES = ['活天然タイ', '仙鳳趾ムキ牡蠣'];
 
     function buildItemLines(group, opts){
       const { itemName: rawItemName, originDisplay, trailingNote } = resolveNameOrigin(group);
@@ -1704,8 +1711,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       });
 
       const lines = [];
-      // 魚種名が10文字以上の場合は、産地を改行して次の行に表記する（値段はその次でもともと改行済み）
-      if (itemName.length >= 10){
+      // 魚種名が10文字以上の場合、または改行指定の品目の場合は、産地を改行して次の行に表記する（値段はその次でもともと改行済み）
+      if (itemName.length >= 10 || FORCE_ORIGIN_NEWLINE_PREFIXES.some(p => itemName.startsWith(p))){
         lines.push(`🔸${itemName}`);
         let originLine = '';
         if (originDisplay) originLine += originDisplay;
@@ -1767,13 +1774,11 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         }
 
         if (group.name === 'ウニ'){
-          const { originDisplay: yuraOrigin } = K.parseOriginLine(group.originLine || '');
           const yuraVariants = group.variants.filter(v => /^SP/.test(v.raw) || /^上\s?/.test(v.raw));
           const regularVariants = group.variants.filter(v => !yuraVariants.includes(v));
 
           // 由良ウニのセクションは「・ウニ」の記載が原稿にあれば必ず出す。
           // 5銘柄は、その日の情報（価格など）が原稿に無くても名前だけは必ず記載する。
-          yuraLines.push(`⭐️由良ウニ${yuraOrigin}`);
           YURA_BRANDS.forEach((brand, i) => {
             const v = yuraVariants.find(vv => vv.raw.includes(brand.name));
             const built = buildYuraItem(brand, v, opts);
@@ -1885,7 +1890,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       const parts = [];
       parts.push(header);
       if (yuraLines.length){
-        parts.push(`【🌊由良ウニ解禁🌊】\n\n${yuraLines.join('\n')}`);
+        parts.push(`【🌊由良ウニ(兵庫・淡路)🌊】\n\n${yuraLines.join('\n')}`);
         parts.push('────────────');
       }
 
