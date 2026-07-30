@@ -168,6 +168,10 @@
     </div>
 
     <div class="notes-box show" id="diagBox" style="background:#f0f3f9; border-color:#c8d2e8;"></div>
+    <div class="notes-box" id="newCatBox" style="background:#f0f3f9; border-color:#c8d2e8;">
+      <b style="color:var(--accent-dark);">💡 新しいカテゴリーを検出しました</b>
+      <ul id="newCatList" style="list-style:none; padding-left:0; margin:8px 0 0;"></ul>
+    </div>
     <div id="previewTable"></div>
     <div class="notes-box" id="notesBox">
       <b>⚠️ 品目として認識できなかった行</b>
@@ -213,6 +217,7 @@
   <!-- STEP 4 -->
   <div class="card" id="outputCard" style="display:none;">
     <p class="step-title"><span class="step-num">4</span>テキスト生成</p>
+    <div class="copy-ok" id="newCatNotice" style="display:none; color:var(--accent-dark); margin:0 0 8px;"></div>
     <textarea id="output" readonly></textarea>
     <div class="row" style="margin-top:10px;">
       <button class="secondary" id="copyBtn" type="button">コピーする</button>
@@ -251,6 +256,8 @@
   const notesBox = document.getElementById('notesBox');
   const notesList = document.getElementById('notesList');
   const diagBox = document.getElementById('diagBox');
+  const newCatBox = document.getElementById('newCatBox');
+  const newCatList = document.getElementById('newCatList');
   const markupCard = document.getElementById('markupCard');
   const outputCard = document.getElementById('outputCard');
   const thresholdInput = document.getElementById('thresholdInput');
@@ -259,6 +266,7 @@
   const roundSelect = document.getElementById('roundSelect');
   const calcBtn = document.getElementById('calcBtn');
   const output = document.getElementById('output');
+  const newCatNotice = document.getElementById('newCatNotice');
   const copyBtn = document.getElementById('copyBtn');
   const copyOk = document.getElementById('copyOk');
   const catList = document.getElementById('catList');
@@ -269,6 +277,8 @@
 
   let allItems = []; // flattened, each item carries dai/naka/tag/name/origin/sizeMain/comment/price/excluded
   let allNotesRaw = [];
+  let pendingCategoryDetections = []; // 未確認の新カテゴリー候補 [{name}]
+  let confirmedNewCategoryNames = []; // 今回の解析で確定した新カテゴリー名（④の通知用）
 
   let categories = [
     {name:'朝〆鮮魚', emoji:'🐟', style:'line'},
@@ -423,36 +433,98 @@
     return {dai:'鮮魚', naka:''};
   }
 
+  // ---- 新カテゴリー自動判定 ----
+  // 「価格」列としても「サイズ」列(g・kg等の重量表記)としても認識できない文字列かどうかを判定する。
+  // 新カテゴリー見出しの候補行が、実は価格やサイズの書き間違い・列ズレでないことを確認するために使う。
+  const WEIGHT_RE = /\d+\s*(g|kg|グラム|キロ|号|サイズ)/i;
+  function looksLikePriceText(s){
+    const p = parsePrice(s);
+    return p.type==='k' || p.type==='yen' || p.type==='ask' || p.type==='unknown';
+  }
+  // 行全体から新カテゴリー名を取り出す（【】があればその中身、無ければ絵文字を除いた全体）
+  function extractCategoryNameFromLine(raw){
+    const { tag } = splitNameTag(raw);
+    return (tag || stripEmoji(raw)).trim();
+  }
+
   function extractItemsFromGrid(grid, blocks){
     const items = [];
     const notes = [];
+    const categoryCandidates = []; // 今回の解析で新規に見つかった大カテゴリー候補 [{name}]
+
     blocks.forEach((range)=>{
       const [s,e] = range;
-      for(let r=0;r<grid.length;r++){
+
+      // 1st pass: 各行を種別分けする（魚種/サイズ/産地/価格の4列がどう埋まっているか）
+      const rows = [];
+      for (let r=0; r<grid.length; r++){
         const cells = grid[r].slice(s,e);
         const rawName = cells[0]||'', rawSize = cells[1]||'', origin = cells[2]||'', priceRaw = cells[3]||'';
-        if (!rawName && !rawSize && !origin && !priceRaw) continue;
-        if (rawName==='魚種' && rawSize==='サイズ') continue; // header row
+        if (!rawName && !rawSize && !origin && !priceRaw){ rows.push({type:'blank'}); continue; }
+        if (rawName==='魚種' && rawSize==='サイズ'){ rows.push({type:'header'}); continue; } // header row
         const price = parsePrice(priceRaw);
         if (price.type==='k' || price.type==='yen' || price.type==='ask' || price.type==='unknown'){
-          const {tag, name} = splitNameTag(rawName);
-          let {sizeMain, comment} = splitSizeComment(rawSize);
-          if (price.prefixNote) sizeMain = sizeMain ? `${sizeMain} ${price.prefixNote}` : price.prefixNote;
-          const cat = suggestCategory(tag, name);
-          items.push({
-            tag, name, origin: normalizeOrigin(origin), sizeMain, comment,
-            price: Object.assign({}, price, {newValue:null}),
-            dai: cat.dai, naka: cat.naka,
-            excluded:false
-          });
+          rows.push({type:'item', rawName, rawSize, origin, priceRaw, price});
         } else if (rawName && !rawSize && !origin && !priceRaw){
-          notes.push(rawName);
-        } else if (rawName || rawSize || origin || priceRaw) {
-          notes.push([rawName,rawSize,origin,priceRaw].filter(Boolean).join(' / '));
+          rows.push({type:'loneName', rawName});
+        } else {
+          rows.push({type:'partial', rawName, rawSize, origin, priceRaw});
+        }
+      }
+
+      // 2nd pass: 「名前だけの行」の直後に品目行が続く場合は新カテゴリー見出しとして扱う
+      let activeCategory = null; // このブロック内で現在有効なカテゴリー上書き（見出し検出中）
+      for (let i=0; i<rows.length; i++){
+        const row = rows[i];
+
+        if (row.type === 'loneName'){
+          const isCandidate = !looksLikePriceText(row.rawName) && !WEIGHT_RE.test(row.rawName);
+          let followedByItem = false;
+          if (isCandidate){
+            let j = i+1;
+            while (rows[j] && rows[j].type==='blank') j++;
+            followedByItem = !!(rows[j] && rows[j].type==='item');
+          }
+          if (isCandidate && followedByItem){
+            const catName = extractCategoryNameFromLine(row.rawName);
+            const alreadyKnown = categories.some(c=>c.name===catName);
+            activeCategory = { name: catName, pending: !alreadyKnown };
+            if (!alreadyKnown) categoryCandidates.push({ name: catName });
+          } else {
+            // 品目としてもカテゴリー見出しとしても認識できない行
+            notes.push(row.rawName);
+          }
+          continue;
+        }
+
+        if (row.type === 'partial'){
+          notes.push([row.rawName,row.rawSize,row.origin,row.priceRaw].filter(Boolean).join(' / '));
+          continue;
+        }
+
+        if (row.type === 'item'){
+          const {tag, name} = splitNameTag(row.rawName);
+          let {sizeMain, comment} = splitSizeComment(row.rawSize);
+          if (row.price.prefixNote) sizeMain = sizeMain ? `${sizeMain} ${row.price.prefixNote}` : row.price.prefixNote;
+          let dai, naka, newCategoryPending;
+          if (activeCategory){
+            dai = activeCategory.name; naka = '';
+            if (activeCategory.pending) newCategoryPending = activeCategory.name;
+          } else {
+            const cat = suggestCategory(tag, name);
+            dai = cat.dai; naka = cat.naka;
+          }
+          items.push({
+            tag, name, origin: normalizeOrigin(row.origin), sizeMain, comment,
+            price: Object.assign({}, row.price, {newValue:null}),
+            dai, naka,
+            excluded:false,
+            newCategoryPending
+          });
         }
       }
     });
-    return {items, notes};
+    return {items, notes, categoryCandidates};
   }
 
   function escapeHtml(s){
@@ -708,15 +780,84 @@
     });
 
     if (allNotesRaw.length){
-      notesList.innerHTML = allNotesRaw.map(n=>`<li>${escapeHtml(n)}</li>`).join('');
+      notesList.innerHTML = allNotesRaw.map((n,ni)=>`
+        <li style="margin-bottom:6px;">
+          ${escapeHtml(n)}
+          <div class="row" style="margin-top:4px;">
+            <button class="secondary tiny" data-act="cat" data-ni="${ni}" type="button">カテゴリーにする</button>
+            <button class="secondary tiny" data-act="del" data-ni="${ni}" type="button">削除する</button>
+          </div>
+        </li>
+      `).join('');
       notesBox.classList.add('show');
+      notesList.querySelectorAll('button').forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          const ni = +btn.dataset.ni, act = btn.dataset.act;
+          const note = allNotesRaw[ni];
+          if (act === 'cat'){
+            const name = extractCategoryNameFromLine(note);
+            if (name && !categories.some(c=>c.name===name)){
+              categories.push({name, emoji:'🐟', style:'line'});
+              renderCatPanel();
+              renderSubnotePanel();
+            }
+          }
+          allNotesRaw.splice(ni, 1);
+          renderPreview();
+        });
+      });
     } else {
       notesBox.classList.remove('show');
+      notesList.innerHTML = '';
     }
 
     previewCard.style.display = 'block';
     markupCard.style.display = 'block';
     refreshOutputIfVisible();
+  }
+
+  // ---- 新カテゴリー検出の確認UI ----
+  // 検出した新カテゴリーはその場で自動的に使用する（保存の要否を尋ねない）。
+  // 誤検出だった場合のみ「カテゴリーではない」で取り消せるようにする。
+  function renderNewCatDetections(){
+    newCatList.innerHTML = '';
+    if (pendingCategoryDetections.length === 0){
+      newCatBox.classList.remove('show');
+      return;
+    }
+    newCatBox.classList.add('show');
+    newCatList.innerHTML = pendingCategoryDetections.map((det,i)=>`
+      <li style="margin-bottom:8px;">
+        「${escapeHtml(det.name)}」を新しいカテゴリーとして自動的に使用しています。
+        <div class="row" style="margin-top:4px;">
+          <button class="secondary tiny" data-act="reject" data-i="${i}" type="button">カテゴリーではない（取り消す）</button>
+        </div>
+      </li>
+    `).join('');
+    newCatList.querySelectorAll('button').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const i = +btn.dataset.i;
+        const det = pendingCategoryDetections[i];
+        // カテゴリーではない → 各品目を通常のカテゴリ判定に戻す
+        allItems.forEach(it=>{
+          if (it.newCategoryPending === det.name){
+            const cat = suggestCategory(it.tag, it.name);
+            it.dai = cat.dai; it.naka = cat.naka;
+            delete it.newCategoryPending;
+          }
+        });
+        // 自動追加していたカテゴリーを、他で使われていなければ取り除く
+        const stillUsed = allItems.some(it=>it.dai===det.name) || subnotes.some(sn=>sn.dai===det.name);
+        if (!stillUsed) categories = categories.filter(c=>c.name!==det.name);
+        confirmedNewCategoryNames = confirmedNewCategoryNames.filter(n=>n!==det.name);
+        pendingCategoryDetections.splice(i, 1);
+        renderNewCatDetections();
+        renderCatPanel();
+        renderSubnotePanel();
+        renderPreview();
+        refreshOutputIfVisible();
+      });
+    });
   }
 
   // 一度お客様向けテキストが表示された後は、品目編集のたびに自動で再生成する
@@ -731,12 +872,27 @@
     const res = extractItemsFromGrid(grid, blocks);
     allItems = res.items;
     allNotesRaw = res.notes;
+    confirmedNewCategoryNames = [];
+    // 同名の候補は1件にまとめ、その場で自動的にカテゴリーとして使用する
+    pendingCategoryDetections = [];
+    const seenCatNames = new Set();
+    res.categoryCandidates.forEach(c=>{
+      if (!seenCatNames.has(c.name)){
+        seenCatNames.add(c.name);
+        pendingCategoryDetections.push({name:c.name});
+        if (!categories.some(cc=>cc.name===c.name)) categories.push({name:c.name, emoji:'🐟', style:'line'});
+        if (!confirmedNewCategoryNames.includes(c.name)) confirmedNewCategoryNames.push(c.name);
+      }
+    });
 
     const rowCount = grid.length;
     const colCount = grid[0] ? grid[0].length : 0;
     const widths = blocks.map(b=>b[1]-b[0]).join(', ');
     diagBox.innerHTML = `📊 読み込み結果：${rowCount}行 × ${colCount}列 → ブロック${blocks.length}個（幅: ${widths}列） / 品目 ${allItems.length}件 / 未認識行 ${allNotesRaw.length}件`;
 
+    renderCatPanel();
+    renderSubnotePanel();
+    renderNewCatDetections();
     renderPreview();
     outputCard.style.display = 'none';
   }
@@ -746,7 +902,10 @@
     pasteArea.value = '';
     allItems = [];
     allNotesRaw = [];
+    pendingCategoryDetections = [];
+    confirmedNewCategoryNames = [];
     diagBox.innerHTML = '';
+    renderNewCatDetections();
     previewCard.style.display = 'none';
     markupCard.style.display = 'none';
     outputCard.style.display = 'none';
@@ -858,6 +1017,12 @@
   function genOutput(){
     const body = generateText();
     output.value = body ? `${buildIntroText()}\n\n\n${body}` : buildIntroText();
+    if (confirmedNewCategoryNames.length){
+      newCatNotice.textContent = `💡 新カテゴリーを検出しました：${confirmedNewCategoryNames.map(n=>`「${n}」`).join('')}`;
+      newCatNotice.style.display = 'block';
+    } else {
+      newCatNotice.style.display = 'none';
+    }
   }
 
   copyBtn.addEventListener('click', ()=>{
