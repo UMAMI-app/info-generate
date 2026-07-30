@@ -969,20 +969,26 @@
   const fileParseError = document.getElementById('fileParseError');
 
   let pyodideReady = null; // Promise<pyodide instance>
+  let pyodideStage = '起動準備';
 
   async function initPyodide(){
+    pyodideStage = 'Pyodide本体の読み込み(loadPyodide)';
     pyodideStatus.textContent = '解析エンジンを読み込み中…（初回は数秒〜20秒程度かかります）';
     const pyodide = await loadPyodide();
 
+    pyodideStage = 'protobuf/micropipパッケージの読み込み';
     pyodideStatus.textContent = '必要な部品を準備中…';
     await pyodide.loadPackage(['protobuf']);
     await pyodide.loadPackage('micropip');
-    const micropip = pyodide.pyimport('micropip');
 
     // Pyodideにはネイティブ拡張の python-snappy が無いため、
     // numbers_parser が読み込まれる前に純Python実装へ差し替えておく
-    const snappyCode = await (await fetch('pure_snappy.py')).text();
+    pyodideStage = 'pure_snappy.pyの取得';
+    const snappyResp = await fetch('pure_snappy.py');
+    if (!snappyResp.ok) throw new Error(`pure_snappy.py の取得に失敗 (HTTP ${snappyResp.status})`);
+    const snappyCode = await snappyResp.text();
     pyodide.FS.writeFile('/tmp/pure_snappy.py', snappyCode);
+    pyodideStage = 'snappy差し替えの実行';
     await pyodide.runPythonAsync(`
 import sys, types
 sys.path.insert(0, '/tmp')
@@ -993,18 +999,32 @@ _fake_snappy.decompress = pure_snappy.decompress
 sys.modules['snappy'] = _fake_snappy
 `);
 
+    pyodideStage = 'numbers-parser等のインストール(micropip.install)';
     pyodideStatus.textContent = 'numbers-parserをインストール中…';
-    await micropip.install([
-      'numbers-parser',
-      'compact-json',
-      'sigfig',
-      'enum-tools',
-      'importlib-resources',
-      'python-dateutil',
-    ]);
+    // numbers-parserはPyPI上でpython-snappyに依存しているが、
+    // python-snappyはcramjam(Rust製バイナリ拡張)に依存しており、
+    // Pyodide(WebAssembly)向けのビルドが存在しないためmicropipではインストールできない。
+    // numbers-parser自体はdeps=Falseで依存自動解決を止め(snappyは上で純Python実装に
+    // 差し替え済みなので不要)、他の純Python依存パッケージは通常通り(deps=True)
+    // インストールして、それぞれの安全な(バイナリ拡張を持たない)依存も一緒に入れる。
+    await pyodide.runPythonAsync(`
+import micropip
+await micropip.install(['numbers-parser'], deps=False)
+await micropip.install([
+    'compact-json',
+    'sigfig',
+    'enum-tools',
+    'importlib-resources',
+    'python-dateutil',
+])
+`);
 
-    const converterCode = await (await fetch('numbers_to_tsv.py')).text();
+    pyodideStage = 'numbers_to_tsv.pyの取得';
+    const converterResp = await fetch('numbers_to_tsv.py');
+    if (!converterResp.ok) throw new Error(`numbers_to_tsv.py の取得に失敗 (HTTP ${converterResp.status})`);
+    const converterCode = await converterResp.text();
     pyodide.FS.writeFile('/tmp/numbers_to_tsv.py', converterCode);
+    pyodideStage = 'numbers_to_tsvモジュールの読み込み';
     await pyodide.runPythonAsync(`
 import importlib
 import numbers_to_tsv
@@ -1017,9 +1037,15 @@ importlib.reload(numbers_to_tsv)
   }
 
   pyodideReady = initPyodide().catch(err=>{
-    pyodideStatus.textContent = '解析エンジンの読み込みに失敗しました。ページを再読み込みしてください。';
+    const detail = (err && (err.message || String(err))) || '不明なエラー';
+    pyodideStatus.innerHTML =
+      '解析エンジンの読み込みに失敗しました。<br>' +
+      '下のエラー内容をコピーして送ってください:<br>' +
+      '<textarea readonly style="width:100%;max-width:600px;height:100px;margin-top:8px;font-size:12px;" ' +
+      'onclick="this.select()">失敗した段階: ' + pyodideStage + '\n\n' + detail + '</textarea>';
     pyodideStatus.style.color = '#b00020';
-    console.error(err);
+    pyodideStatus.style.display = 'block';
+    console.error('[pyodide init failed at]', pyodideStage, err);
     throw err;
   });
 
