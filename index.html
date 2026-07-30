@@ -283,6 +283,12 @@
     {name:'冷凍・加工品', emoji:'🧊', style:'line'},
     {name:'青果', emoji:'🥬', style:'line'},
   ];
+  // 新カテゴリー自動判定で見つかったカテゴリーは、既定で「冷凍・加工品」の直前に挿入する
+  function insertNewCategory(name, emoji){
+    const cat = { name, emoji: emoji || '🐟', style:'line' };
+    const idx = categories.findIndex(c=>c.name==='冷凍・加工品');
+    if (idx === -1) categories.push(cat); else categories.splice(idx, 0, cat);
+  }
   let subnotes = [
     {dai:'朝〆鮮魚', note:'🌀渦巻処理も可能🌀'},
   ];
@@ -425,8 +431,8 @@
     if (/村産|農園|産直/.test(t) || /メークイン|ダンシャク|きたあかり|テストロイヤー|デストロイヤー|インカ|いも|芋|ねぎ|ネギ|大根|人参|野菜/.test(n)) return {dai:'青果', naka:''};
     // タグに「活貝」「activeカニ」等、貝・カニ・エビ・ウニを示す語がある場合は、
     // 魚種名が個別の品種リストに無くても貝・甲殻類に分類する
-    if (/アワビ|サザエ|ホタテ|カキ|牡蠣|ハマグリ|アサリ|シジミ|カニ|エビ|ロブスター|ウニ/.test(n) || /貝|カニ|蟹|エビ|海老|ウニ/.test(t)) return {dai:'貝・甲殻類', naka:''};
-    if (/活〆|活魚/.test(t)) return {dai:'朝〆鮮魚', naka:'養殖活魚🐟神経〆納品📦'};
+    if (/アワビ|サザエ|ホタテ|カキ|牡蠣|ハマグリ|アサリ|シジミ|カニ|蟹|エビ|海老|ロブスター|ウニ/.test(n) || /貝|カニ|蟹|エビ|海老|ウニ/.test(t)) return {dai:'貝・甲殻類', naka:''};
+    if (/活魚/.test(t)) return {dai:'朝〆鮮魚', naka:'養殖活魚🐟神経〆納品📦'};
     if (/江戸前|神経締め|神経〆|脳〆/.test(t)) return {dai:'朝〆鮮魚', naka:'神経締め‼️'};
     return {dai:'鮮魚', naka:''};
   }
@@ -814,7 +820,7 @@
           if (act === 'cat'){
             const { name, emoji } = extractCategoryInfoFromLine(note);
             if (name && !categories.some(c=>c.name===name)){
-              categories.push({name, emoji: emoji || '🐟', style:'line'});
+              insertNewCategory(name, emoji);
               renderCatPanel();
               renderSubnotePanel();
             }
@@ -895,7 +901,7 @@
       if (!seenCatNames.has(c.name)){
         seenCatNames.add(c.name);
         pendingCategoryDetections.push({name:c.name});
-        if (!categories.some(cc=>cc.name===c.name)) categories.push({name:c.name, emoji: c.emoji || '🐟', style:'line'});
+        if (!categories.some(cc=>cc.name===c.name)) insertNewCategory(c.name, c.emoji);
       }
     });
 
