@@ -1560,6 +1560,13 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           continue;
         }
 
+        // 開穴子のように「サイズ行」の次に「・㌔NNNN」で価格だけが別行になっているケース。
+        // 通常の「・品目」より先に判定し、直前のサイズ行に価格をぶら下げる。
+        if (current && current.variants.length>0 && /^[・･]?㌔/.test(line)){
+          current.variants[current.variants.length-1].priceLine = line.replace(/^[・･]/, '');
+          continue;
+        }
+
         if (line.startsWith('・') || line.startsWith('･')){
           startGroup(line.slice(1));
           continue;
@@ -1764,6 +1771,29 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       ];
     }
 
+    // ---------------- 開穴子(原稿の書式が特殊: 名前・グレード・産地が連結し、
+    // サイズ行と「・㌔NNNN」の価格行が別行になっている) ----------------
+    function buildKaianagoLines(group, opts){
+      const { itemName: rawItemName, originDisplay } = K.extractNameAndOrigin(group.name);
+      let itemName = K.normalizeName(rawItemName);
+      let grade = '';
+      const gm = itemName.match(/(大|中|小)$/);
+      if (gm){ grade = gm[1]; itemName = itemName.slice(0, -1); }
+
+      const lines = [`🔸${grade ? `(${grade})` : ''}${itemName}${originDisplay}`];
+      group.variants.forEach(v => {
+        const sizeText = v.raw.trim();
+        const pm = v.priceLine ? v.priceLine.match(/([\d,]+)/) : null;
+        if (pm){
+          const price = K.calcPrice(parseInt(pm[1].replace(/,/g,''),10), opts.threshold, opts.lowMult, opts.highMult, opts.unit);
+          lines.push(`${sizeText}  k${fmtYen(price)}`);
+        } else {
+          lines.push(`${sizeText} ⚠️要確認`);
+        }
+      });
+      return lines;
+    }
+
     // 名前の文字数に関わらず、産地は必ず改行して次の行に記載したい品目
     const FORCE_ORIGIN_NEWLINE_PREFIXES = ['活天然タイ', '仙鳳趾ムキ牡蠣'];
 
@@ -1867,6 +1897,13 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
             const built = buildRegularUniItem(v, letters[i], opts);
             if (built) uniRegularItems.push(built);
           });
+          return;
+        }
+
+        if (/^開穴子/.test(group.name)){
+          const lines = buildKaianagoLines(group, opts);
+          const cat = K.baseClassify(K.normalizeName(K.extractNameAndOrigin(group.name).itemName));
+          (categoryItems[cat] = categoryItems[cat]||[]).push({ lines, isKani:false });
           return;
         }
 
