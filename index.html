@@ -75,6 +75,7 @@
   #output{
     width:100%; min-height:260px; border:1px solid var(--border); border-radius:8px; padding:12px;
     font-size:13px; white-space:pre-wrap; font-family:-apple-system,BlinkMacSystemFont,sans-serif;
+    overflow:hidden; resize:none;
   }
   #outputK{
     width:100%; min-height:260px; border:1px solid var(--border); border-radius:8px; padding:12px;
@@ -167,7 +168,6 @@
       <button class="secondary tiny" id="addSubnoteBtn" type="button">＋ 追加</button>
     </div>
 
-    <div class="notes-box show" id="diagBox" style="background:#f0f3f9; border-color:#c8d2e8;"></div>
     <div class="notes-box" id="newCatBox" style="background:#f0f3f9; border-color:#c8d2e8;">
       <b style="color:var(--accent-dark);">💡 新しいカテゴリーを検出しました</b>
       <ul id="newCatList" style="list-style:none; padding-left:0; margin:8px 0 0;"></ul>
@@ -217,7 +217,6 @@
   <!-- STEP 4 -->
   <div class="card" id="outputCard" style="display:none;">
     <p class="step-title"><span class="step-num">4</span>テキスト生成</p>
-    <div class="copy-ok" id="newCatNotice" style="display:none; color:var(--accent-dark); margin:0 0 8px;"></div>
     <textarea id="output" readonly></textarea>
     <div class="row" style="margin-top:10px;">
       <button class="secondary" id="copyBtn" type="button">コピーする</button>
@@ -255,7 +254,6 @@
   const previewTable = document.getElementById('previewTable');
   const notesBox = document.getElementById('notesBox');
   const notesList = document.getElementById('notesList');
-  const diagBox = document.getElementById('diagBox');
   const newCatBox = document.getElementById('newCatBox');
   const newCatList = document.getElementById('newCatList');
   const markupCard = document.getElementById('markupCard');
@@ -266,7 +264,6 @@
   const roundSelect = document.getElementById('roundSelect');
   const calcBtn = document.getElementById('calcBtn');
   const output = document.getElementById('output');
-  const newCatNotice = document.getElementById('newCatNotice');
   const copyBtn = document.getElementById('copyBtn');
   const copyOk = document.getElementById('copyOk');
   const catList = document.getElementById('catList');
@@ -277,8 +274,7 @@
 
   let allItems = []; // flattened, each item carries dai/naka/tag/name/origin/sizeMain/comment/price/excluded
   let allNotesRaw = [];
-  let pendingCategoryDetections = []; // 未確認の新カテゴリー候補 [{name}]
-  let confirmedNewCategoryNames = []; // 今回の解析で確定した新カテゴリー名（④の通知用）
+  let pendingCategoryDetections = []; // 自動適用した新カテゴリー候補（誤検出時の取り消し用） [{name}]
 
   let categories = [
     {name:'朝〆鮮魚', emoji:'🐟', style:'line'},
@@ -441,10 +437,14 @@
     const p = parsePrice(s);
     return p.type==='k' || p.type==='yen' || p.type==='ask' || p.type==='unknown';
   }
-  // 行全体から新カテゴリー名を取り出す（【】があればその中身、無ければ絵文字を除いた全体）
-  function extractCategoryNameFromLine(raw){
-    const { tag } = splitNameTag(raw);
-    return (tag || stripEmoji(raw)).trim();
+  // 行全体から新カテゴリー名と、見出しに使う絵文字を取り出す
+  // （【】があればその中身を対象にし、無ければ行全体を対象にする。絵文字はその中の最初の1つを使う）
+  function extractCategoryInfoFromLine(raw){
+    const s = (raw||'').trim();
+    const m = s.match(/^【(.*?)】/);
+    const source = m ? m[1] : s;
+    const emojiMatch = source.match(/\p{Extended_Pictographic}/u);
+    return { name: stripEmoji(source).trim(), emoji: emojiMatch ? emojiMatch[0] : '' };
   }
 
   function extractItemsFromGrid(grid, blocks){
@@ -486,10 +486,10 @@
             followedByItem = !!(rows[j] && rows[j].type==='item');
           }
           if (isCandidate && followedByItem){
-            const catName = extractCategoryNameFromLine(row.rawName);
+            const { name: catName, emoji: catEmoji } = extractCategoryInfoFromLine(row.rawName);
             const alreadyKnown = categories.some(c=>c.name===catName);
             activeCategory = { name: catName, pending: !alreadyKnown };
-            if (!alreadyKnown) categoryCandidates.push({ name: catName });
+            if (!alreadyKnown) categoryCandidates.push({ name: catName, emoji: catEmoji });
           } else {
             // 品目としてもカテゴリー見出しとしても認識できない行
             notes.push(row.rawName);
@@ -795,9 +795,9 @@
           const ni = +btn.dataset.ni, act = btn.dataset.act;
           const note = allNotesRaw[ni];
           if (act === 'cat'){
-            const name = extractCategoryNameFromLine(note);
+            const { name, emoji } = extractCategoryInfoFromLine(note);
             if (name && !categories.some(c=>c.name===name)){
-              categories.push({name, emoji:'🐟', style:'line'});
+              categories.push({name, emoji: emoji || '🐟', style:'line'});
               renderCatPanel();
               renderSubnotePanel();
             }
@@ -849,7 +849,6 @@
         // 自動追加していたカテゴリーを、他で使われていなければ取り除く
         const stillUsed = allItems.some(it=>it.dai===det.name) || subnotes.some(sn=>sn.dai===det.name);
         if (!stillUsed) categories = categories.filter(c=>c.name!==det.name);
-        confirmedNewCategoryNames = confirmedNewCategoryNames.filter(n=>n!==det.name);
         pendingCategoryDetections.splice(i, 1);
         renderNewCatDetections();
         renderCatPanel();
@@ -872,7 +871,6 @@
     const res = extractItemsFromGrid(grid, blocks);
     allItems = res.items;
     allNotesRaw = res.notes;
-    confirmedNewCategoryNames = [];
     // 同名の候補は1件にまとめ、その場で自動的にカテゴリーとして使用する
     pendingCategoryDetections = [];
     const seenCatNames = new Set();
@@ -880,15 +878,9 @@
       if (!seenCatNames.has(c.name)){
         seenCatNames.add(c.name);
         pendingCategoryDetections.push({name:c.name});
-        if (!categories.some(cc=>cc.name===c.name)) categories.push({name:c.name, emoji:'🐟', style:'line'});
-        if (!confirmedNewCategoryNames.includes(c.name)) confirmedNewCategoryNames.push(c.name);
+        if (!categories.some(cc=>cc.name===c.name)) categories.push({name:c.name, emoji: c.emoji || '🐟', style:'line'});
       }
     });
-
-    const rowCount = grid.length;
-    const colCount = grid[0] ? grid[0].length : 0;
-    const widths = blocks.map(b=>b[1]-b[0]).join(', ');
-    diagBox.innerHTML = `📊 読み込み結果：${rowCount}行 × ${colCount}列 → ブロック${blocks.length}個（幅: ${widths}列） / 品目 ${allItems.length}件 / 未認識行 ${allNotesRaw.length}件`;
 
     renderCatPanel();
     renderSubnotePanel();
@@ -903,8 +895,6 @@
     allItems = [];
     allNotesRaw = [];
     pendingCategoryDetections = [];
-    confirmedNewCategoryNames = [];
-    diagBox.innerHTML = '';
     renderNewCatDetections();
     previewCard.style.display = 'none';
     markupCard.style.display = 'none';
@@ -1017,13 +1007,17 @@
   function genOutput(){
     const body = generateText();
     output.value = body ? `${buildIntroText()}\n\n\n${body}` : buildIntroText();
-    if (confirmedNewCategoryNames.length){
-      newCatNotice.textContent = `💡 新カテゴリーを検出しました：${confirmedNewCategoryNames.map(n=>`「${n}」`).join('')}`;
-      newCatNotice.style.display = 'block';
-    } else {
-      newCatNotice.style.display = 'none';
-    }
+    resizeOutput();
   }
+
+  // 生成されたテキストは中でスクロールさせず、全文が見えるようにテキストエリア自体を伸ばす（スクロールはページ全体で行う）
+  function resizeOutput(){
+    if (outputCard.style.display === 'none') return;
+    if (!panelIsozaki.classList.contains('active')) return;
+    output.style.height = 'auto';
+    output.style.height = output.scrollHeight + 'px';
+  }
+  window.addEventListener('resize', resizeOutput);
 
   copyBtn.addEventListener('click', ()=>{
     output.select();
@@ -1053,6 +1047,7 @@
     panelIsozaki.classList.toggle('active', isIso);
     panelKadokura.classList.toggle('active', !isIso);
     if (!isIso) resizeOutputK();
+    else resizeOutput();
   }
   tabBtnIsozaki.addEventListener('click', ()=>switchTab('isozaki'));
   tabBtnKadokura.addEventListener('click', ()=>switchTab('kadokura'));
