@@ -261,8 +261,21 @@
         <button class="secondary" id="clearBtnK" type="button">クリア</button>
       </div>
     </div>
+    <div class="card">
+      <p class="step-title"><span class="step-num">2</span>価格ルールで一括計算</p>
+      <div class="controls">
+        <div class="field">
+          <label>10,000円値未満の倍率</label>
+          <input type="number" id="lowMultInputK" value="1.15" step="0.01" min="0">
+        </div>
+        <div class="field">
+          <label>10,000円以上の倍率</label>
+          <input type="number" id="highMultInputK" value="1.10" step="0.01" min="0">
+        </div>
+      </div>
+    </div>
     <div class="card" id="outputCardK" style="display:none;">
-      <p class="step-title"><span class="step-num">2</span>テキスト生成</p>
+      <p class="step-title"><span class="step-num">3</span>テキスト生成</p>
       <div class="row" style="margin-bottom:10px;">
         <button class="secondary" id="copyBtnK" type="button">コピーする</button>
         <span class="copy-ok" id="copyOkK">✔︎ コピーしました</span>
@@ -280,8 +293,21 @@
         <button class="secondary" id="clearBtnI" type="button">クリア</button>
       </div>
     </div>
+    <div class="card">
+      <p class="step-title"><span class="step-num">2</span>価格ルールで一括計算</p>
+      <div class="controls">
+        <div class="field">
+          <label>10,000円値未満の倍率</label>
+          <input type="number" id="lowMultInputI" value="1.1" step="0.01" min="0">
+        </div>
+        <div class="field">
+          <label>10,000円以上の倍率</label>
+          <input type="number" id="highMultInputI" value="1.1" step="0.01" min="0">
+        </div>
+      </div>
+    </div>
     <div class="card" id="outputCardI" style="display:none;">
-      <p class="step-title"><span class="step-num">2</span>テキスト生成</p>
+      <p class="step-title"><span class="step-num">3</span>テキスト生成</p>
       <div class="row" style="margin-bottom:10px;">
         <button class="secondary" id="copyBtnI" type="button">コピーする</button>
         <span class="copy-ok" id="copyOkI">✔︎ コピーしました</span>
@@ -1343,6 +1369,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
   const outputK = document.getElementById('outputK');
   const copyBtnK = document.getElementById('copyBtnK');
   const copyOkK = document.getElementById('copyOkK');
+  const lowMultInputK = document.getElementById('lowMultInputK');
+  const highMultInputK = document.getElementById('highMultInputK');
 
   // ============================================================
   // 角倉案内 パーサー / フォーマッター
@@ -2076,8 +2104,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     return { process, buildFullOutput };
   })(Kdk);
 
-  function processKadokuraText(raw){
-    return KdkBuild.buildFullOutput(raw);
+  function processKadokuraText(raw, opts){
+    return KdkBuild.buildFullOutput(raw, opts);
   }
 
   // 変換後のテキストは中でスクロールさせず、全文が見えるようにテキストエリア自体を伸ばす（スクロールはページ全体で行う）
@@ -2092,7 +2120,13 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
   genBtnK.addEventListener('click', ()=>{
     const raw = pasteAreaK.value;
     if (!raw.trim()){ alert('貼り付けるテキストがありません。'); return; }
-    outputK.value = processKadokuraText(raw);
+    const opts = {
+      threshold: 10000,
+      lowMult: parseFloat(lowMultInputK.value) || 1,
+      highMult: parseFloat(highMultInputK.value) || 1,
+      unit: 100,
+    };
+    outputK.value = processKadokuraText(raw, opts);
     outputCardK.style.display = 'block';
     resizeOutputK();
   });
@@ -2127,27 +2161,30 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
   const outputI = document.getElementById('outputI');
   const copyBtnI = document.getElementById('copyBtnI');
   const copyOkI = document.getElementById('copyOkI');
+  const lowMultInputI = document.getElementById('lowMultInputI');
+  const highMultInputI = document.getElementById('highMultInputI');
 
-  function ichimaruMarkupPrice(digits){
+  function ichimaruMarkupPrice(digits, opts){
     const value = parseInt(digits.replace(/,/g,''), 10);
     if (isNaN(value)) return digits;
-    const raw = value * 1.10;
+    const mult = value < opts.threshold ? opts.lowMult : opts.highMult;
+    const raw = value * mult;
     const clean = Math.round(raw * 1e6) / 1e6; // 浮動小数点誤差を除去
     const floored = Math.floor(clean / 10) * 10; // 10円未満切り捨て
     return String(floored);
   }
 
-  function convertIchimaruLine(line){
-    return line.replace(/([k@])([\d,]+)/g, (m, sym, digits) => sym + ichimaruMarkupPrice(digits));
+  function convertIchimaruLine(line, opts){
+    return line.replace(/([k@])([\d,]+)/g, (m, sym, digits) => sym + ichimaruMarkupPrice(digits, opts));
   }
 
-  function processIchimaruText(rawText){
+  function processIchimaruText(rawText, opts){
     const blocks = rawText.replace(/\r\n/g,'\n').split(/\n\s*\n/);
     const outBlocks = blocks.map(block => {
       const lines = block.split('\n').map(l=>l.trim()).filter(l=>l.length>0);
       if (lines.length === 0) return '';
       const hasPrice = lines.some(l => /[k@][\d,]+/.test(l));
-      const converted = lines.map(l => convertIchimaruLine(l));
+      const converted = lines.map(l => convertIchimaruLine(l, opts));
       if (hasPrice) converted[0] = `◆ ${converted[0]}`;
       return converted.join('\n');
     }).filter(b => b.length > 0);
@@ -2166,7 +2203,12 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
   genBtnI.addEventListener('click', ()=>{
     const raw = pasteAreaI.value;
     if (!raw.trim()){ alert('貼り付けるテキストがありません。'); return; }
-    outputI.value = processIchimaruText(raw);
+    const opts = {
+      threshold: 10000,
+      lowMult: parseFloat(lowMultInputI.value) || 1,
+      highMult: parseFloat(highMultInputI.value) || 1,
+    };
+    outputI.value = processIchimaruText(raw, opts);
     outputCardI.style.display = 'block';
     resizeOutputI();
   });
