@@ -34,7 +34,7 @@
     font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; resize:vertical;
   }
   /* テキスト生成結果は画面幅にかかわらずタップ時のズームを起こさないよう常に16px以上にする */
-  #output, #outputK{font-size:16px;}
+  #output, #outputK, #outputI{font-size:16px;}
   .hint{font-size:12px; color:var(--sub); margin:6px 0 12px;}
   button{
     background:var(--accent); color:#fff; border:none; border-radius:7px; padding:9px 16px;
@@ -87,6 +87,11 @@
     overflow:hidden; resize:none;
   }
   #outputK{
+    width:100%; min-height:260px; border:1px solid var(--border); border-radius:8px; padding:12px;
+    font-size:13px; white-space:pre-wrap; font-family:-apple-system,BlinkMacSystemFont,sans-serif;
+    overflow:hidden; resize:none;
+  }
+  #outputI{
     width:100%; min-height:260px; border:1px solid var(--border); border-radius:8px; padding:12px;
     font-size:13px; white-space:pre-wrap; font-family:-apple-system,BlinkMacSystemFont,sans-serif;
     overflow:hidden; resize:none;
@@ -155,6 +160,7 @@
   <div class="tabs">
     <button class="tab-btn active" id="tabBtnIsozaki" type="button" data-tab="isozaki">磯崎案内</button>
     <button class="tab-btn" id="tabBtnKadokura" type="button" data-tab="kadokura">角倉案内</button>
+    <button class="tab-btn" id="tabBtnIchimaru" type="button" data-tab="ichimaru">イチマル</button>
   </div>
 
   <div class="tab-panel active" id="panel-isozaki">
@@ -262,6 +268,25 @@
       <textarea id="outputK"></textarea>
     </div>
   </div><!-- /panel-kadokura -->
+
+  <div class="tab-panel" id="panel-ichimaru">
+    <div class="card">
+      <p class="step-title"><span class="step-num">1</span>原稿を貼り付け</p>
+      <textarea id="pasteAreaI"></textarea>
+      <div class="row" style="margin-top:10px;">
+        <button id="genBtnI">変換</button>
+        <button class="secondary" id="clearBtnI" type="button">クリア</button>
+      </div>
+    </div>
+    <div class="card" id="outputCardI" style="display:none;">
+      <p class="step-title"><span class="step-num">2</span>テキスト生成</p>
+      <div class="row" style="margin-bottom:10px;">
+        <button class="secondary" id="copyBtnI" type="button">コピーする</button>
+        <span class="copy-ok" id="copyOkI">✔︎ コピーしました</span>
+      </div>
+      <textarea id="outputI"></textarea>
+    </div>
+  </div><!-- /panel-ichimaru -->
 
 </div>
 
@@ -1283,20 +1308,25 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
   // ---- タブ切り替え ----
   const tabBtnIsozaki = document.getElementById('tabBtnIsozaki');
   const tabBtnKadokura = document.getElementById('tabBtnKadokura');
+  const tabBtnIchimaru = document.getElementById('tabBtnIchimaru');
   const panelIsozaki = document.getElementById('panel-isozaki');
   const panelKadokura = document.getElementById('panel-kadokura');
+  const panelIchimaru = document.getElementById('panel-ichimaru');
 
   function switchTab(tab){
-    const isIso = tab === 'isozaki';
-    tabBtnIsozaki.classList.toggle('active', isIso);
-    tabBtnKadokura.classList.toggle('active', !isIso);
-    panelIsozaki.classList.toggle('active', isIso);
-    panelKadokura.classList.toggle('active', !isIso);
-    if (!isIso) resizeOutputK();
-    else resizeOutput();
+    tabBtnIsozaki.classList.toggle('active', tab === 'isozaki');
+    tabBtnKadokura.classList.toggle('active', tab === 'kadokura');
+    tabBtnIchimaru.classList.toggle('active', tab === 'ichimaru');
+    panelIsozaki.classList.toggle('active', tab === 'isozaki');
+    panelKadokura.classList.toggle('active', tab === 'kadokura');
+    panelIchimaru.classList.toggle('active', tab === 'ichimaru');
+    if (tab === 'isozaki') resizeOutput();
+    else if (tab === 'kadokura') resizeOutputK();
+    else resizeOutputI();
   }
   tabBtnIsozaki.addEventListener('click', ()=>switchTab('isozaki'));
   tabBtnKadokura.addEventListener('click', ()=>switchTab('kadokura'));
+  tabBtnIchimaru.addEventListener('click', ()=>switchTab('ichimaru'));
 
   // ---- 角倉案内タブ（ルールは追って設定。今は貼り付けたテキストをそのまま整形なしで表示） ----
   const pasteAreaK = document.getElementById('pasteAreaK');
@@ -2075,6 +2105,80 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       document.execCommand('copy');
       copyOkK.style.display = 'inline';
       setTimeout(()=>{ copyOkK.style.display = 'none'; }, 1800);
+    });
+  });
+
+  // ============================================================
+  // イチマル案内（角倉と同じUI仕様。ルールは単純: 品目の頭に「◆ 」を付け、
+  // k/@に続く価格を一律1.10倍→10円未満切り捨てで再計算するだけ。
+  // カテゴリ分けや見出し・定型文の自動生成は行わず、原稿の並び・注記はそのまま活かす）
+  // ============================================================
+  const pasteAreaI = document.getElementById('pasteAreaI');
+  const genBtnI = document.getElementById('genBtnI');
+  const clearBtnI = document.getElementById('clearBtnI');
+  const outputCardI = document.getElementById('outputCardI');
+  const outputI = document.getElementById('outputI');
+  const copyBtnI = document.getElementById('copyBtnI');
+  const copyOkI = document.getElementById('copyOkI');
+
+  function ichimaruMarkupPrice(digits){
+    const value = parseInt(digits.replace(/,/g,''), 10);
+    if (isNaN(value)) return digits;
+    const raw = value * 1.10;
+    const clean = Math.round(raw * 1e6) / 1e6; // 浮動小数点誤差を除去
+    const floored = Math.floor(clean / 10) * 10; // 10円未満切り捨て
+    return String(floored);
+  }
+
+  function convertIchimaruLine(line){
+    return line.replace(/([k@])([\d,]+)/g, (m, sym, digits) => sym + ichimaruMarkupPrice(digits));
+  }
+
+  function processIchimaruText(rawText){
+    const blocks = rawText.replace(/\r\n/g,'\n').split(/\n\s*\n/);
+    const outBlocks = blocks.map(block => {
+      const lines = block.split('\n').map(l=>l.trim()).filter(l=>l.length>0);
+      if (lines.length === 0) return '';
+      const hasPrice = lines.some(l => /[k@][\d,]+/.test(l));
+      const converted = lines.map(l => convertIchimaruLine(l));
+      if (hasPrice) converted[0] = `◆ ${converted[0]}`;
+      return converted.join('\n');
+    }).filter(b => b.length > 0);
+    return outBlocks.join('\n\n');
+  }
+
+  // 変換後のテキストは中でスクロールさせず、全文が見えるようにテキストエリア自体を伸ばす（スクロールはページ全体で行う）
+  function resizeOutputI(){
+    if (outputCardI.style.display === 'none') return;
+    if (!panelIchimaru.classList.contains('active')) return;
+    outputI.style.height = 'auto';
+    outputI.style.height = outputI.scrollHeight + 'px';
+  }
+  window.addEventListener('resize', resizeOutputI);
+
+  genBtnI.addEventListener('click', ()=>{
+    const raw = pasteAreaI.value;
+    if (!raw.trim()){ alert('貼り付けるテキストがありません。'); return; }
+    outputI.value = processIchimaruText(raw);
+    outputCardI.style.display = 'block';
+    resizeOutputI();
+  });
+
+  clearBtnI.addEventListener('click', ()=>{
+    pasteAreaI.value = '';
+    outputI.value = '';
+    outputCardI.style.display = 'none';
+  });
+
+  copyBtnI.addEventListener('click', ()=>{
+    navigator.clipboard.writeText(outputI.value).then(()=>{
+      copyOkI.style.display = 'inline';
+      setTimeout(()=>{ copyOkI.style.display = 'none'; }, 1800);
+    }).catch(()=>{
+      outputI.select();
+      document.execCommand('copy');
+      copyOkI.style.display = 'inline';
+      setTimeout(()=>{ copyOkI.style.display = 'none'; }, 1800);
     });
   });
 })();
