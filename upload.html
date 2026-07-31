@@ -342,10 +342,11 @@
     {name:'冷凍・加工品', emoji:'🧊', style:'line'},
     {name:'青果', emoji:'🥬', style:'line'},
   ];
-  // 新カテゴリー自動判定で見つかったカテゴリーは、既定で「冷凍・加工品」の直前に挿入する
+  // 新カテゴリー自動判定で見つかったカテゴリーは、魚種カテゴリーの後・「貝・甲殻類」の直前に挿入する
+  // (「貝・甲殻類」→「冷凍・加工品」→「青果」の並びより必ず上にくるようにする)
   function insertNewCategory(name, emoji){
     const cat = { name, emoji: emoji || '🐟', style:'line' };
-    const idx = categories.findIndex(c=>c.name==='冷凍・加工品');
+    const idx = categories.findIndex(c=>c.name==='貝・甲殻類');
     if (idx === -1) categories.push(cat); else categories.splice(idx, 0, cat);
   }
   let subnotes = [
