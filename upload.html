@@ -240,12 +240,14 @@
 
   <!-- STEP 4 -->
   <div class="card" id="outputCard" style="display:none;">
-    <p class="step-title"><span class="step-num">4</span>テキスト生成</p>
-    <textarea id="output"></textarea>
-    <div class="row" style="margin-top:10px;">
-      <button class="secondary" id="copyBtn" type="button">コピーする</button>
-      <span class="copy-ok" id="copyOk">✔︎ コピーしました</span>
+    <div class="row" style="justify-content:space-between; margin-bottom:10px;">
+      <p class="step-title" style="margin:0;"><span class="step-num">4</span>テキスト生成</p>
+      <div class="row">
+        <button class="secondary" id="copyBtn" type="button">コピーする</button>
+        <span class="copy-ok" id="copyOk">✔︎ コピーしました</span>
+      </div>
     </div>
+    <textarea id="output"></textarea>
   </div>
 
   </div><!-- /panel-isozaki -->
@@ -334,8 +336,8 @@
 
   let categories = [
     {name:'朝〆鮮魚', emoji:'🐟', style:'line'},
-    // 鮮魚は「その他(ナカ無し)」→「神経締め‼️」→「活〆❗️」の順で並べる
-    {name:'鮮魚', emoji:'🐡', style:'line', nakaOrder:['', '神経締め‼️', '活〆❗️']},
+    // 鮮魚は「神経締め‼️」→「活〆❗️」→区切り線→「その他(ナカ無し)」の順で並べる
+    {name:'鮮魚', emoji:'🐡', style:'line', nakaOrder:['神経締め‼️', '活〆❗️', ''], separatorBeforeKey:''},
     {name:'貝・甲殻類', emoji:'🦪', style:'line'},
     {name:'冷凍・加工品', emoji:'🧊', style:'line'},
     {name:'青果', emoji:'🥬', style:'line'},
@@ -1224,8 +1226,12 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         const rest = keys.filter(k=>!cat.nakaOrder.includes(k));
         keys = [...orderedKnown, ...rest];
       }
-      keys.forEach(key=>{
+      keys.forEach((key, ki)=>{
         const items = nakaMap.get(key);
+        // 指定したキーの手前に区切り線を1本挟む（先頭に来る場合は挟まない）
+        if (cat.separatorBeforeKey === key && ki > 0){
+          blocks.push({ lines:['ー　ー　ー　ー　ー　ー　ー'], newCategory:false });
+        }
         if (key){
           blocks.push({ lines:[`■${key}`], newCategory:false });
         }
