@@ -1605,7 +1605,9 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
 
     // ---------------- 行のグルーピング ----------------
     function groupLines(rawText){
-      const lines = rawText.replace(/\r\n/g,'\n').split('\n').map(l=>l.trim()).filter(l=>l.length>0);
+      // 空行も含めて保持しておく(「由良ウニ」ブロックとその後の通常ウニ商品を、
+      // 空行で区切られているかどうかで見分けるのに使うため)
+      const lines = rawText.replace(/\r\n/g,'\n').split('\n').map(l=>l.trim());
       const groups = [];
       let current = null;
       let inKakouhin = false;
@@ -1615,32 +1617,32 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         current = { name, originLine:null, variants:[], notes:[], asaJimeMarker:false, subVariants:null, forcedCategory: inKakouhin ? '加工品' : null };
       }
 
-      for (const line of lines){
-        if (line === '兵庫淡路島'){ inKakouhin = true; continue; }
+      function pushLine(line){
+        if (line === '兵庫淡路島'){ inKakouhin = true; return; }
 
         // 宮津トリ貝の「・玉/代金NNNN」はサブバリアントの価格行。通常の「・品目」より先に判定する
         if (current && current.subVariants && /^[・･]?玉\/代金/.test(line)){
           const mm = line.match(/([\d,]+)\s*$/);
           if (mm) current.subVariants[current.subVariants.length-1].price = parseInt(mm[1].replace(/,/g,''),10);
-          continue;
+          return;
         }
 
         // 開穴子のように「サイズ行」の次に「・㌔NNNN」で価格だけが別行になっているケース。
         // 通常の「・品目」より先に判定し、直前のサイズ行に価格をぶら下げる。
         if (current && current.variants.length>0 && /^[・･]?㌔/.test(line)){
           current.variants[current.variants.length-1].priceLine = line.replace(/^[・･]/, '');
-          continue;
+          return;
         }
 
         if (line.startsWith('・') || line.startsWith('･')){
           startGroup(line.slice(1));
-          continue;
+          return;
         }
         if (line.startsWith('宮津')){
           startGroup(line);
-          continue;
+          return;
         }
-        if (!current) continue;
+        if (!current) return;
 
         if (line.startsWith('↑')){
           if (line.includes('朝締め')) current.asaJimeMarker = true;
@@ -1648,35 +1650,47 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
             const mm = line.match(/(\d+)/);
             if (mm && current.variants.length>0) current.variants[current.variants.length-1].qty = mm[1];
           }
-          continue;
+          return;
         }
-        if (line.startsWith('※')){ current.notes.push(line); continue; }
+        if (line.startsWith('※')){ current.notes.push(line); return; }
 
         // 「→次回木曜日着」のような矢印の注記は、直前のバリアント（品目）にぶら下げる
         if (line.startsWith('→') && current.variants.length>0){
           current.variants[current.variants.length-1].arrowNote = line;
-          continue;
+          return;
         }
 
         if (line.startsWith('◎')){
           if (!current.subVariants) current.subVariants = [];
           const mm = line.match(/^◎(\S+?)-(.+)$/);
           current.subVariants.push({ label: mm ? mm[1] : line, size: mm ? mm[2] : '', price: null });
-          continue;
+          return;
         }
 
         // 行全体がカッコだけ、かつ数字を含まない場合のみ「単独の注記」として直前バリアントに付与
         if (/^[（(][^)）]*[)）]$/.test(line) && !/^\(SP\)$|^\(上\)$/.test(line) && current.variants.length>0){
           current.variants[current.variants.length-1].extraNote = line.replace(/[()（）]/g,'');
-          continue;
+          return;
         }
 
         if (current.variants.length===0 && current.originLine===null && current.subVariants===null && !/\d/.test(line)){
           current.originLine = line;
-          continue;
+          return;
         }
 
         current.variants.push({ raw: line, qty:null, extraNote:null });
+      }
+
+      for (const line of lines){
+        if (line.length === 0){
+          // 空行: 直前のバリアントに「この後ろで一旦区切れている」ことを記録しておく
+          // (例: 由良ウニのブロックとその後の通常ウニ商品を、空行で見分けるのに使う)
+          if (current && current.variants.length>0){
+            current.variants[current.variants.length-1].blankAfter = true;
+          }
+          continue;
+        }
+        pushLine(line);
       }
       if (current) groups.push(current);
       return groups;
@@ -1733,9 +1747,11 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       else if (/^上[\s　]?/.test(s)) { grade = '上'; rest = s.replace(/^上[\s　]?/, ''); }
       else if (/^並[\s　]?/.test(s)) { grade = '並'; rest = s.replace(/^並[\s　]?/, ''); }
       else {
-        // 「廣田丸SP約80g...」「与助/他SP 約70g...」のように名前の後ろにSPが付くパターン
+        // 「廣田丸SP約80g...」「与助/他SP 約70g...」のように名前の後ろにSPが付くパターン。
+        // ただし「倖栄水産無添加白並SP250g 13,500」のような通常ウニ商品名にも
+        // 偶然「SP」を含むものがあるため、由良ウニの行に必ず現れる「1枚」の有無で見分ける
         const spIdx = s.indexOf('SP');
-        if (spIdx > 0 && !/\d/.test(s.slice(0, spIdx))){
+        if (spIdx > 0 && !/\d/.test(s.slice(0, spIdx)) && /1枚/.test(s.slice(spIdx))){
           grade = 'SP';
           name = s.slice(0, spIdx).trim();
           rest = s.slice(spIdx + 2);
@@ -1822,12 +1838,14 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     }
 
     function buildRegularUniItem(v, letter, opts){
-      const m = v.raw.match(/(\d+g)(SP)?\s*1枚([\d,]+)/);
+      // グレード「SP」はサイズの直前・直後どちらに付くこともあり、
+      // 価格の前に「1枚」が付くこともあれば付かない(価格が直接続く)こともある
+      const m = v.raw.trim().match(/^(.*?)(SP)?(\d+g[〜~\-]?)(SP)?\s*(?:1枚)?\s*([\d,]+)/);
       if (!m) return null;
-      const namePart = v.raw.slice(0, m.index).trim();
-      const size = m[1];
-      const grade = m[2] || '';
-      const price = K.calcPrice(parseInt(m[3].replace(/,/g,''),10), opts.threshold, opts.lowMult, opts.highMult, opts.unit);
+      const namePart = m[1].trim();
+      const size = m[3];
+      const grade = m[2] || m[4] || '';
+      const price = K.calcPrice(parseInt(m[5].replace(/,/g,''),10), opts.threshold, opts.lowMult, opts.highMult, opts.unit);
       const qtyLine = v.qty ? [`→${v.qty}枚あり`] : [];
       return [
         `🔸${namePart}ウニ${grade}`,
@@ -1950,11 +1968,24 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         }
 
         if (group.name === 'ウニ'){
-          const parsedYura = group.variants.map(v => ({ v, p: parseYuraLine(v.raw, opts) }));
-          const yuraParsedLines = parsedYura.filter(x => x.p).map(x => x.p);
-          const regularVariants = parsedYura.filter(x => !x.p).map(x => x.v);
+          // 「由良ウニ...」という産地行があるブロックだけ由良ウニ扱いにする。
+          // その中でも、由良ウニなのは最初に空行で区切れるところまでで、
+          // 空行の後(表記が変わっているところ)からは通常の【ウニ】商品として扱う。
+          const isYuraBlock = /由良/.test(group.originLine || '');
+          let yuraVariants = [], regularVariants = group.variants;
+          if (isYuraBlock){
+            const splitIdx = group.variants.findIndex(v => v.blankAfter);
+            if (splitIdx === -1){
+              yuraVariants = group.variants;
+              regularVariants = [];
+            } else {
+              yuraVariants = group.variants.slice(0, splitIdx + 1);
+              regularVariants = group.variants.slice(splitIdx + 1);
+            }
+          }
 
           // 由良ウニは原稿にある分だけ記載する(原稿に無い銘柄は載せない)
+          const yuraParsedLines = yuraVariants.map(v => parseYuraLine(v.raw, opts)).filter(Boolean);
           yuraLines.push(...buildYuraSection(yuraParsedLines));
 
           const letters = ['A','B','C','D','E','F'];
