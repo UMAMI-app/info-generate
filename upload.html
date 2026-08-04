@@ -2221,22 +2221,28 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
 
   const ICHIMARU_INTRO = '北海道より直送‼️\n明日着オススメ食材です💁‍♂️';
 
+  const isIchimaruPriceLine = (l)=> /[k@][\d,]+/.test(l);
+
+  // 原稿は品目ごとに空行で区切られている。最初の価格付き品目が出てくる前に
+  // 挟まる「電波調子悪く〜」のような前置き文章(価格が付かない段落)は削除する。
+  // 価格付き品目が一度でも出た後に来る、価格の付かない段落(お知らせ・注記等)は
+  // 削除せずそのまま残す。
   function processIchimaruText(rawText, opts){
-    const blocks = rawText.replace(/\r\n/g,'\n').split(/\n\s*\n/);
-    const outBlocks = blocks.map(block => {
-      let lines = block.split('\n').map(l=>l.trim()).filter(l=>l.length>0);
-      if (lines.length === 0) return '';
-      const priceIdx = lines.findIndex(l => /[k@][\d,]+/.test(l));
-      const hasPrice = priceIdx !== -1;
-      // 商品名の行より前に、何かの前置き(伝達事項など)が紛れ込んでいることがあるため、
-      // 価格行の直前の行だけを商品名として残し、それより前の行は削除する
-      if (hasPrice && priceIdx >= 2){
-        lines = lines.slice(priceIdx - 1);
-      }
+    const blocks = rawText.replace(/\r\n/g,'\n').split(/\n\s*\n/)
+      .map(block => block.split('\n').map(l=>l.trim()).filter(l=>l.length>0))
+      .filter(lines => lines.length > 0);
+
+    let seenPricedItem = false;
+    const outBlocks = [];
+    blocks.forEach(lines=>{
+      const hasPrice = lines.some(isIchimaruPriceLine);
+      if (!hasPrice && !seenPricedItem) return; // 品目が始まる前の前置き文章は削除
+      if (hasPrice) seenPricedItem = true;
       const converted = lines.map(l => convertIchimaruLine(l, opts));
       if (hasPrice) converted[0] = `◆ ${converted[0]}${ichimaruNameEmoji(converted[0])}`;
-      return converted.join('\n');
-    }).filter(b => b.length > 0);
+      outBlocks.push(converted.join('\n'));
+    });
+
     return `${ICHIMARU_INTRO}\n\n${outBlocks.join('\n\n')}`;
   }
 
