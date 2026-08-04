@@ -2224,9 +2224,15 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
   function processIchimaruText(rawText, opts){
     const blocks = rawText.replace(/\r\n/g,'\n').split(/\n\s*\n/);
     const outBlocks = blocks.map(block => {
-      const lines = block.split('\n').map(l=>l.trim()).filter(l=>l.length>0);
+      let lines = block.split('\n').map(l=>l.trim()).filter(l=>l.length>0);
       if (lines.length === 0) return '';
-      const hasPrice = lines.some(l => /[k@][\d,]+/.test(l));
+      const priceIdx = lines.findIndex(l => /[k@][\d,]+/.test(l));
+      const hasPrice = priceIdx !== -1;
+      // 商品名の行より前に、何かの前置き(伝達事項など)が紛れ込んでいることがあるため、
+      // 価格行の直前の行だけを商品名として残し、それより前の行は削除する
+      if (hasPrice && priceIdx >= 2){
+        lines = lines.slice(priceIdx - 1);
+      }
       const converted = lines.map(l => convertIchimaruLine(l, opts));
       if (hasPrice) converted[0] = `◆ ${converted[0]}${ichimaruNameEmoji(converted[0])}`;
       return converted.join('\n');
