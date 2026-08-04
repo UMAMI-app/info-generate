@@ -2209,6 +2209,18 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     return line.replace(/([k@])([\d,]+)/g, (m, sym, digits) => sym + ichimaruMarkupPrice(digits, opts));
   }
 
+  // 商品名に含まれるキーワードに応じて、名前の後ろに絵文字を付ける
+  function ichimaruNameEmoji(nameLine){
+    let suffix = '';
+    if (/カキ|牡蠣/.test(nameLine)) suffix += '🦪';
+    if (/釣/.test(nameLine)) suffix += '🎣';
+    if (/渦巻/.test(nameLine)) suffix += '🌀';
+    if (/蟹|カニ|ガニ/.test(nameLine)) suffix += '🦀';
+    return suffix;
+  }
+
+  const ICHIMARU_INTRO = '北海道より直送‼️\n明日着オススメ食材です💁‍♂️';
+
   function processIchimaruText(rawText, opts){
     const blocks = rawText.replace(/\r\n/g,'\n').split(/\n\s*\n/);
     const outBlocks = blocks.map(block => {
@@ -2216,10 +2228,10 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       if (lines.length === 0) return '';
       const hasPrice = lines.some(l => /[k@][\d,]+/.test(l));
       const converted = lines.map(l => convertIchimaruLine(l, opts));
-      if (hasPrice) converted[0] = `◆ ${converted[0]}`;
+      if (hasPrice) converted[0] = `◆ ${converted[0]}${ichimaruNameEmoji(converted[0])}`;
       return converted.join('\n');
     }).filter(b => b.length > 0);
-    return outBlocks.join('\n\n');
+    return `${ICHIMARU_INTRO}\n\n${outBlocks.join('\n\n')}`;
   }
 
   // 変換後のテキストは中でスクロールさせず、全文が見えるようにテキストエリア自体を伸ばす（スクロールはページ全体で行う）
