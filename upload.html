@@ -1982,6 +1982,16 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
               yuraVariants = group.variants.slice(0, splitIdx + 1);
               regularVariants = group.variants.slice(splitIdx + 1);
             }
+          } else {
+            // 産地行(originLine)としてではなく、通常のウニ品目の途中に
+            // 「由良ウニ〜」という行が紛れ込んでいるケース。この行より前は
+            // 通常の【ウニ】商品、この行(見出し行自体は品目でない)より後ろは
+            // 由良ウニ扱いにする。
+            const markerIdx = group.variants.findIndex(v => /^由良ウニ/.test(v.raw.trim()));
+            if (markerIdx !== -1){
+              regularVariants = group.variants.slice(0, markerIdx);
+              yuraVariants = group.variants.slice(markerIdx + 1);
+            }
           }
 
           // 由良ウニは原稿にある分だけ記載する(原稿に無い銘柄は載せない)
