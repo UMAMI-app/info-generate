@@ -1603,6 +1603,19 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       return { sizeText: s, priceStr: '', tail: '', priceOk:false };
     }
 
+    // 「→」で始まる注記の表記を整える。「有り」は「あり」に統一し、
+    // 「釣」「釣物」を含む場合は🎣を付ける
+    function formatArrowNote(text){
+      let t = text.replace(/有り/g, 'あり');
+      if (/釣/.test(t) && !/🎣/.test(t)){
+        t = t.replace(/釣物?/, m => `${m}🎣`);
+      }
+      if (/脂/.test(t) && !/👌/.test(t)){
+        t = t.replace(/[！!]+$/, '').trimEnd() + '👌';
+      }
+      return t;
+    }
+
     // ---------------- 行のグルーピング ----------------
     function groupLines(rawText){
       // 空行も含めて保持しておく(「由良ウニ」ブロックとその後の通常ウニ商品を、
@@ -1650,10 +1663,11 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         if (!current) return;
 
         if (line.startsWith('↑')){
-          if (line.includes('朝締め')) current.asaJimeMarker = true;
-          else {
-            const mm = line.match(/(\d+)/);
-            if (mm && current.variants.length>0) current.variants[current.variants.length-1].qty = mm[1];
+          if (line.includes('朝締め')){
+            current.asaJimeMarker = true;
+          } else if (current.variants.length>0){
+            // 「↑」の注記は削除せず、「→」に変えて直前の品目にそのまま残す
+            current.variants[current.variants.length-1].arrowNote = formatArrowNote('→' + line.slice(1));
           }
           return;
         }
@@ -1661,7 +1675,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
 
         // 「→次回木曜日着」のような矢印の注記は、直前のバリアント（品目）にぶら下げる
         if (line.startsWith('→') && current.variants.length>0){
-          current.variants[current.variants.length-1].arrowNote = line;
+          current.variants[current.variants.length-1].arrowNote = formatArrowNote(line);
           return;
         }
 
@@ -1716,11 +1730,16 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
 
     function resolveNameOrigin(group){
       if (group.originLine){
-        const { itemName } = K.extractNameAndOrigin(group.name);
-        const { originDisplay, trailingNote, pref } = K.parseOriginLine(group.originLine);
-        return { itemName, originDisplay, trailingNote, pref };
+        const fromName = K.extractNameAndOrigin(group.name);
+        const fromOriginLine = K.parseOriginLine(group.originLine);
+        if (fromOriginLine.originDisplay){
+          return { itemName: fromName.itemName, originDisplay: fromOriginLine.originDisplay, trailingNote: fromOriginLine.trailingNote, pref: fromOriginLine.pref, extraLine: null };
+        }
+        // 産地行に産地情報が無い場合(例:「(Aウロコブランド)」のようなブランド表記)は、
+        // 名前側に既にある産地情報をそのまま使い、産地行の内容は別行の注記として残す
+        return { itemName: fromName.itemName, originDisplay: fromName.originDisplay, trailingNote: '', pref: fromName.pref, extraLine: group.originLine };
       }
-      return K.extractNameAndOrigin(group.name);
+      return { ...K.extractNameAndOrigin(group.name), extraLine: null };
     }
 
     // ---------------- 由良ウニ ----------------
@@ -1827,18 +1846,23 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     }
 
     function buildRegularUniItem(v, opts){
-      // グレード「SP/上/並」はサイズの直前・直後どちらに付くこともあり、
-      // 先頭に★や①②③等の記号が付くこともある(いずれも品目名ではないので除去する)。
+      // 先頭に★や①②③等の記号が付くこともある(品目名ではないので除去する)。
       // 価格の前は「1枚」+数字、「1枚」+×+数字、数字のみ、のどれでも拾えるようにする
       const raw = v.raw.trim().replace(/^[★☆]/, '').replace(/^[①②③④⑤⑥⑦⑧⑨⑩]/, '').trim();
-      const m = raw.match(/^(.*?)(SP|上|並)?(\d+g[〜~\-]?\d*g?)(SP|上|並)?\s*(?:1枚)?\s*[×xX]?\s*([\d,]+)/);
+      const m = raw.match(/^(.*?)(\d+g[〜~\-]?\d*g?)\s*(?:1枚)?\s*[×xX]?\s*([\d,]+)/);
       if (!m) return null;
-      const { itemName, originDisplay } = K.extractNameAndOrigin(m[1].trim());
-      const size = m[3];
-      const price = K.calcPrice(parseInt(m[5].replace(/,/g,''),10), opts.threshold, opts.lowMult, opts.highMult, opts.unit);
-      const qtyLine = v.qty ? [`→${v.qty}枚あり`] : [];
+      let namePart = m[1].trim();
+      // 名前の末尾に付く「SP/上/並」はグレード表記なので、産地判定には含めず、
+      // 産地表記の外側(末尾)に付け直す(例:「佐藤白宮城SP」→「佐藤白(宮城)SP」)
+      let gradeSuffix = '';
+      const gm = namePart.match(/(SP|上|並)$/);
+      if (gm){ gradeSuffix = gm[1]; namePart = namePart.slice(0, -gm[1].length); }
+      const { itemName, originDisplay } = K.extractNameAndOrigin(namePart);
+      const size = m[2];
+      const price = K.calcPrice(parseInt(m[3].replace(/,/g,''),10), opts.threshold, opts.lowMult, opts.highMult, opts.unit);
+      const qtyLine = v.arrowNote ? [v.arrowNote] : [];
       return [
-        `🔸${itemName}${originDisplay}`,
+        `🔸${itemName}${originDisplay}${gradeSuffix}`,
         `${size}  ${fmtYen(price)}円/枚`,
         ...qtyLine,
       ];
@@ -1949,7 +1973,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     const FORCE_ORIGIN_NEWLINE_PREFIXES = ['活天然タイ', '仙鳳趾ムキ牡蠣'];
 
     function buildItemLines(group, opts){
-      const { itemName: rawItemName, originDisplay, trailingNote } = resolveNameOrigin(group);
+      const { itemName: rawItemName, originDisplay, trailingNote, extraLine } = resolveNameOrigin(group);
       const itemName = K.normalizeName(rawItemName);
 
       const parsed = group.variants.map(v => K.parseVariantLine(v.raw, opts));
@@ -1989,6 +2013,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         if (hoisted) header += ` ${hoisted}`;
         lines.push(header);
       }
+      if (extraLine) lines.push(extraLine);
 
       if (parsed.length === 0 && group.originLine === '入荷無し'){ lines.push('入荷無し'); return lines; }
 
@@ -2003,7 +2028,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           if (group.variants[i].extraNote) line += ` (${group.variants[i].extraNote})`;
         }
         lines.push(line);
-        if (group.variants[i].qty) lines.push(`→${group.variants[i].qty}枚あり`);
+        if (group.variants[i].arrowNote) lines.push(group.variants[i].arrowNote);
       });
       group.notes.forEach(n => lines.push(n));
       return lines;
