@@ -1647,17 +1647,39 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           return;
         }
 
+        // 「◎品目名」で始まる丸ウニ系の価格行(・＠NNN,NNN円)は、通常の「・」新品目開始より先に判定する
+        if (current && current.isMaruUni && /^[・･][＠@]/.test(line)){
+          const pm = line.match(/([\d,]+)/);
+          if (pm) current.maruUniPrice = parseInt(pm[1].replace(/,/g,''),10);
+          current.maruUniHasYen = /円/.test(line);
+          return;
+        }
+
         if (line.startsWith('・') || line.startsWith('･')){
           startGroup(line.slice(1));
           return;
         }
         if (line.startsWith('宮津')){
           startGroup(line);
+          current.isMiyazu = true;
           return;
         }
         // 「🌟泳,稚鮎」のように🌟で始まる行も新しい品目の開始とみなす(・や宮津以外の特殊書式)
         if (line.startsWith('🌟')){
           startGroup(line);
+          return;
+        }
+        // 「◎天草,天然赤ウニ」のように◎で始まる行も新しい品目(丸ウニ系)の開始とみなす。
+        // ただし宮津トリ貝の「◎ラベル-サイズ」はサブバリアントなので区別する
+        if (line.startsWith('◎')){
+          const svm = line.match(/^◎(\S+?)-(.+)$/);
+          if (current && current.isMiyazu && svm){
+            if (!current.subVariants) current.subVariants = [];
+            current.subVariants.push({ label: svm[1], size: svm[2], price: null });
+            return;
+          }
+          startGroup(line.slice(1));
+          current.isMaruUni = true;
           return;
         }
         if (!current) return;
@@ -1679,20 +1701,15 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           return;
         }
 
-        if (line.startsWith('◎')){
-          if (!current.subVariants) current.subVariants = [];
-          const mm = line.match(/^◎(\S+?)-(.+)$/);
-          current.subVariants.push({ label: mm ? mm[1] : line, size: mm ? mm[2] : '', price: null });
-          return;
-        }
-
         // 行全体がカッコだけ、かつ数字を含まない場合のみ「単独の注記」として直前バリアントに付与
         if (/^[（(][^)）]*[)）]$/.test(line) && !/^\(SP\)$|^\(上\)$/.test(line) && current.variants.length>0){
           current.variants[current.variants.length-1].extraNote = line.replace(/[()（）]/g,'');
           return;
         }
 
-        if (current.variants.length===0 && current.originLine===null && current.subVariants===null && !/\d/.test(line)){
+        // 丸ウニ系(◎)は産地行の自動判定をせず、全て内容行としてそのままvariantsに積む
+        // (品目名に既に産地が入っていないことも多く、判定を専用の組み立て関数側で行うため)
+        if (!current.isMaruUni && current.variants.length===0 && current.originLine===null && current.subVariants===null && !/\d/.test(line)){
           current.originLine = line;
           return;
         }
@@ -1969,6 +1986,54 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       return lines;
     }
 
+    // ---------------- 丸ウニ(◎で始まる品目。「・＠NNN,NNN円」の価格行を持ち、
+    // 原稿の金額をそのまま使う(値上げ計算はしない)特殊な書式) ----------------
+    function buildMaruUniLines(group, opts){
+      // 品目名の（）内のコンマは「・」に統一する(例:「（松浦,花箱）」→「（松浦・花箱）」)
+      const name = group.name.replace(/[（(]([^)）]*)[)）]/g, (m, inner) => `（${inner.replace(/,/g,'・')}）`);
+
+      let header = `🔸${name}`;
+      let startIdx = 0;
+      // 産地行は数字(サイズ)を含まない行のみを対象にする
+      // (「250gロシアバフンウニ」のようにサイズ+品種名の行を産地と誤認しないようにするため)
+      if (group.variants.length > 0 && !/\d/.test(group.variants[0].raw)){
+        const originInfo = K.parseOriginLine(group.variants[0].raw.trim());
+        if (originInfo.originDisplay){
+          header += originInfo.originDisplay;
+          startIdx = 1;
+        }
+      }
+      const lines = [header];
+
+      // 残りの行から「数字+g」のサイズを1つだけ取り出し、価格行に回す。
+      // それ以外のテキストは内容行としてそのまま残す(extraNoteが付いていれば末尾に（）で付け足す)
+      let size = '';
+      const contentLines = [];
+      for (let i = startIdx; i < group.variants.length; i++){
+        const v = group.variants[i];
+        const raw = v.raw.trim();
+        const m = !size ? raw.match(/^(\D*?)(約?\d+g)(\D*)$/) : null;
+        let text;
+        if (m){
+          size = m[2];
+          text = (m[1] + m[3]).trim();
+        } else {
+          text = raw;
+        }
+        if (v.extraNote) text = text ? `${text}（${v.extraNote}）` : `（${v.extraNote}）`;
+        if (text) contentLines.push(text);
+      }
+      lines.push(...contentLines);
+
+      // 価格は原稿の金額をそのまま使う(値上げ計算はしない)。「塩水」を含む品目は「/枚」を付けない
+      if (group.maruUniPrice != null){
+        const priceText = `${fmtYen(group.maruUniPrice)}${group.maruUniHasYen ? '円' : ''}`;
+        const suffix = /塩水/.test(name) ? '' : '/枚';
+        lines.push(`${size}　${priceText}${suffix}`);
+      }
+      return lines;
+    }
+
     // 名前の文字数に関わらず、産地は必ず改行して次の行に記載したい品目
     const FORCE_ORIGIN_NEWLINE_PREFIXES = ['活天然タイ', '仙鳳趾ムキ牡蠣'];
 
@@ -2064,6 +2129,12 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           const cat = asaJime ? '朝締め' : K.baseClassify(nm);
           const lines = [`🔸${nm}${originDisplay}`, group.originLine];
           (categoryItems[cat] = categoryItems[cat]||[]).push({ lines, isKani:false });
+          return;
+        }
+
+        // 丸ウニ(◎で始まる品目)は【ウニ】カテゴリーにそのまま追加する
+        if (group.isMaruUni){
+          uniRegularItems.push(buildMaruUniLines(group, opts));
           return;
         }
 
