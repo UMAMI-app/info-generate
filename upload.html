@@ -281,6 +281,10 @@
         <span class="copy-ok" id="copyOkK">✔︎ コピーしました</span>
       </div>
       <textarea id="outputK"></textarea>
+      <div class="row" style="margin-top:10px;">
+        <button class="secondary" id="copyBtnK2" type="button">コピーする</button>
+        <span class="copy-ok" id="copyOkK2">✔︎ コピーしました</span>
+      </div>
     </div>
   </div><!-- /panel-kadokura -->
 
@@ -1207,6 +1211,40 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     return lines;
   }
 
+  // 同じ品目(【タグ】名前／産地が同一)のサイズ違い等は、見出しを1回だけにして
+  // サイズ・価格の行をまとめる(登場順は保つ)
+  function mergeSameItems(items){
+    const groups = [];
+    const indexByKey = new Map();
+    items.forEach(it=>{
+      const key = `${it.tag||''} ${it.name||''} ${it.origin||''}`;
+      let idx = indexByKey.get(key);
+      if (idx === undefined){
+        idx = groups.length;
+        indexByKey.set(key, idx);
+        groups.push({ tag: it.tag, name: it.name, origin: it.origin, items: [] });
+      }
+      groups[idx].items.push(it);
+    });
+    return groups;
+  }
+
+  function itemGroupLines(group){
+    const tagPart = group.tag ? `【${group.tag}】` : '';
+    const originPart = group.origin ? `／${group.origin}` : '';
+    const lines = [`🔸${tagPart}${group.name}${originPart}`];
+    group.items.forEach(it=>{
+      const priceStr = formatPrice(it.price);
+      if (it.sizeMain){
+        lines.push(`${it.sizeMain}　${priceStr}`);
+        if (it.comment) lines.push(`→${it.comment}`);
+      } else {
+        lines.push(it.comment ? `${priceStr}→${it.comment}` : priceStr);
+      }
+    });
+    return lines;
+  }
+
   // 「部位指定は～」等のメモに列挙されうる魚種名。原稿には毎回同じ文言で書かれているが、
   // その日実際には入荷が無い魚種の名前が残ってしまうことがあるため、実在チェックして取り除く
   const PART_NOTE_FISH_NAMES = ['カンパチ', 'ハマチ'];
@@ -1262,8 +1300,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         if (key){
           blocks.push({ lines:[`■${key}`], newCategory:false });
         }
-        items.forEach(it=>{
-          blocks.push({ lines: itemLines(it), newCategory:false });
+        mergeSameItems(items).forEach(group=>{
+          blocks.push({ lines: itemGroupLines(group), newCategory:false });
         });
       });
 
@@ -1368,6 +1406,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
   const outputCardK = document.getElementById('outputCardK');
   const outputK = document.getElementById('outputK');
   const copyBtnK = document.getElementById('copyBtnK');
+  const copyBtnK2 = document.getElementById('copyBtnK2');
+  const copyOkK2 = document.getElementById('copyOkK2');
   const copyOkK = document.getElementById('copyOkK');
   const lowMultInputK = document.getElementById('lowMultInputK');
   const highMultInputK = document.getElementById('highMultInputK');
@@ -2340,17 +2380,19 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     outputCardK.style.display = 'none';
   });
 
-  copyBtnK.addEventListener('click', ()=>{
+  function copyOutputK(okEl){
     navigator.clipboard.writeText(outputK.value).then(()=>{
-      copyOkK.style.display = 'inline';
-      setTimeout(()=>{ copyOkK.style.display = 'none'; }, 1800);
+      okEl.style.display = 'inline';
+      setTimeout(()=>{ okEl.style.display = 'none'; }, 1800);
     }).catch(()=>{
       outputK.select();
       document.execCommand('copy');
-      copyOkK.style.display = 'inline';
-      setTimeout(()=>{ copyOkK.style.display = 'none'; }, 1800);
+      okEl.style.display = 'inline';
+      setTimeout(()=>{ okEl.style.display = 'none'; }, 1800);
     });
-  });
+  }
+  copyBtnK.addEventListener('click', ()=>copyOutputK(copyOkK));
+  copyBtnK2.addEventListener('click', ()=>copyOutputK(copyOkK2));
 
   // ============================================================
   // イチマル案内（角倉と同じUI仕様。ルールは単純: 品目の頭に「◆ 」を付け、
