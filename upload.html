@@ -302,7 +302,7 @@
       <div class="controls">
         <div class="field">
           <label>10,000円値未満の倍率</label>
-          <input type="number" id="lowMultInputI" value="1.1" step="0.01" min="0">
+          <input type="number" id="lowMultInputI" value="1.15" step="0.01" min="0">
         </div>
         <div class="field">
           <label>10,000円以上の倍率</label>
@@ -2417,8 +2417,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     const mult = value < opts.threshold ? opts.lowMult : opts.highMult;
     const raw = value * mult;
     const clean = Math.round(raw * 1e6) / 1e6; // 浮動小数点誤差を除去
-    const floored = Math.floor(clean / 10) * 10; // 10円未満切り捨て
-    return String(floored);
+    const rounded = Math.ceil(clean / 100) * 100; // 100円未満切り上げ
+    return String(rounded);
   }
 
   function convertIchimaruLine(line, opts){
