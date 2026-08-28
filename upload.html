@@ -2633,6 +2633,17 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       'いかって届くようなSPな仕立てです🪡‼️',
     ].join('\n');
 
+    const ARAKI_SEPARATOR = '_ _ _ _ _ _ _ _ _ _ _ _ _ _';
+
+    const ARAKI_OUTRO = [
+      '⚠️ 13:00までのご注文 🕐',
+      '',
+      '東京都心店舗→翌日15時頃着',
+      '関西→翌日14:00-16:00着',
+      '',
+      'ご検討のほど、よろしくお願いいたします！',
+    ].join('\n');
+
     const isSizeLine = (l) => /^\d+\.\d+$/.test(l.trim());
     const isPriceLine = (l) => /^k[\d,]+/.test(l.trim());
 
@@ -2687,7 +2698,14 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       item.variants.forEach(v => {
         const sizeText = v.sizes.length ? `${v.sizes.join('／')}kg` : '';
         const priceText = v.price != null ? `k${fmtYen(v.price)}` : '';
-        if (sizeText && priceText) lines.push(`・${sizeText} → ${priceText}`);
+        if (sizeText && priceText){
+          if (v.sizes.length >= 4){
+            lines.push(`・${sizeText}`);
+            lines.push(`→ ${priceText}`);
+          } else {
+            lines.push(`・${sizeText} → ${priceText}`);
+          }
+        }
         else if (sizeText) lines.push(`・${sizeText}`);
         else if (priceText) lines.push(`→ ${priceText}`);
       });
@@ -2697,7 +2715,10 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     function buildFullOutput(rawText, opts){
       const items = process(rawText, opts);
       const body = items.map(it => buildItemLines(it).join('\n')).join('\n\n');
-      return body ? `${ARAKI_INTRO}\n\n${body}` : ARAKI_INTRO;
+      const parts = [ARAKI_INTRO, ARAKI_SEPARATOR];
+      if (body) parts.push(body);
+      parts.push(ARAKI_SEPARATOR, ARAKI_OUTRO);
+      return parts.join('\n\n');
     }
 
     return { process, buildItemLines, buildFullOutput, calcPrice, fmtYen };
