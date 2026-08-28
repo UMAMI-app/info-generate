@@ -249,6 +249,10 @@
       </div>
     </div>
     <textarea id="output"></textarea>
+    <div class="row" style="margin-top:10px;">
+      <button class="secondary" id="copyBtn2" type="button">コピーする</button>
+      <span class="copy-ok" id="copyOk2">✔︎ コピーしました</span>
+    </div>
   </div>
 
   </div><!-- /panel-isozaki -->
@@ -381,6 +385,8 @@
   const output = document.getElementById('output');
   const copyBtn = document.getElementById('copyBtn');
   const copyOk = document.getElementById('copyOk');
+  const copyBtn2 = document.getElementById('copyBtn2');
+  const copyOk2 = document.getElementById('copyOk2');
   const catList = document.getElementById('catList');
   const addCatBtn = document.getElementById('addCatBtn');
   const subnoteList = document.getElementById('subnoteList');
@@ -1400,17 +1406,19 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
   }
   window.addEventListener('resize', resizeOutput);
 
-  copyBtn.addEventListener('click', ()=>{
+  function copyOutputZ(okEl){
     navigator.clipboard.writeText(output.value).then(()=>{
-      copyOk.style.display = 'inline';
-      setTimeout(()=>{ copyOk.style.display = 'none'; }, 1800);
+      okEl.style.display = 'inline';
+      setTimeout(()=>{ okEl.style.display = 'none'; }, 1800);
     }).catch(()=>{
       output.select();
       document.execCommand('copy');
-      copyOk.style.display = 'inline';
-      setTimeout(()=>{ copyOk.style.display = 'none'; }, 1800);
+      okEl.style.display = 'inline';
+      setTimeout(()=>{ okEl.style.display = 'none'; }, 1800);
     });
-  });
+  }
+  copyBtn.addEventListener('click', ()=>copyOutputZ(copyOk));
+  copyBtn2.addEventListener('click', ()=>copyOutputZ(copyOk2));
 
   renderCatPanel();
   renderSubnotePanel();
@@ -2628,9 +2636,13 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     const isSizeLine = (l) => /^\d+\.\d+$/.test(l.trim());
     const isPriceLine = (l) => /^k[\d,]+/.test(l.trim());
 
-    // 原稿を空行区切りのブロックに分け、品目ごとにまとめる。
-    // 品目名を持たない(サイズ+価格だけの)ブロックは直前の品目のサイズ違いとして扱う。
-    // まだ品目が始まっていない段階で価格行の無いブロック(挨拶文等)は丸ごと捨てる。
+    // 原稿を空行区切りのブロックに分けつつ、行単位で解析する。
+    // ・サイズ行(小数)はいったん貯めておき、価格行が来たら「貯めたサイズ＋その価格」で
+    //   1つのサイズ違い(variant)として確定させる。これは空行をまたいでも引き継ぐ
+    //   （例: 価格行の直後に空行を挟まずサイズ行が続く／価格行の後、空行を挟んで次のサイズ行が続く、
+    //   どちらも同じ品目の別サイズとして扱う）。
+    // ・サイズ行でも価格行でもない行は新しい品目名として扱う。
+    // ・まだ品目が始まっていない段階の文章(挨拶文等)は丸ごと捨てる。
     function process(rawText, opts){
       const blocks = rawText.replace(/\r\n/g,'\n').split(/\n\s*\n/)
         .map(b => b.split('\n').map(l=>l.trim()).filter(l=>l.length>0))
@@ -2638,35 +2650,30 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
 
       const items = [];
       let current = null;
+      let pendingSizes = [];
 
       blocks.forEach(lines => {
         const hasPrice = lines.some(isPriceLine);
         if (!hasPrice && !current) return; // 品目が始まる前の挨拶文等は削除
 
         let idx = 0;
-        let name = null;
         if (!isSizeLine(lines[0]) && !isPriceLine(lines[0])){
-          name = lines[0];
+          current = { name: lines[0], variants: [] };
+          items.push(current);
+          pendingSizes = [];
           idx = 1;
         }
 
-        const sizes = [];
-        let price = null;
         for (; idx < lines.length; idx++){
           const l = lines[idx];
-          if (isSizeLine(l)) sizes.push(l);
-          else if (isPriceLine(l)){
+          if (isSizeLine(l)){
+            pendingSizes.push(l);
+          } else if (isPriceLine(l)){
             const m = l.match(/^k([\d,]+)/);
-            if (m) price = calcPrice(parseInt(m[1].replace(/,/g,''),10), opts);
+            const price = m ? calcPrice(parseInt(m[1].replace(/,/g,''),10), opts) : null;
+            if (current) current.variants.push({ sizes: pendingSizes, price });
+            pendingSizes = [];
           }
-        }
-
-        if (name){
-          current = { name, variants: [] };
-          items.push(current);
-        }
-        if (current && (sizes.length || price != null)){
-          current.variants.push({ sizes, price });
         }
       });
 
@@ -2675,7 +2682,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
 
     function buildItemLines(item){
       const star = /SP/.test(item.name) ? '⭐️⭐️' : '⭐️';
-      const lines = [`${star}${item.name}`];
+      const boat = /船上/.test(item.name) ? '🚢' : '';
+      const lines = [`${star}${item.name}${boat}`];
       item.variants.forEach(v => {
         const sizeText = v.sizes.length ? `${v.sizes.join('／')}kg` : '';
         const priceText = v.price != null ? `k${fmtYen(v.price)}` : '';
