@@ -158,9 +158,10 @@
   <h1>入荷情報 整理 & 価格調整ツール</h1>
 
   <div class="tabs">
-    <button class="tab-btn active" id="tabBtnKadokura" type="button" data-tab="kadokura">角倉案内</button>
+    <button class="tab-btn active" id="tabBtnKadokura" type="button" data-tab="kadokura">角倉</button>
     <button class="tab-btn" id="tabBtnIchimaru" type="button" data-tab="ichimaru">イチマル</button>
-    <button class="tab-btn" id="tabBtnIsozaki" type="button" data-tab="isozaki">磯崎案内</button>
+    <button class="tab-btn" id="tabBtnAraki" type="button" data-tab="araki">荒木鮮魚</button>
+    <button class="tab-btn" id="tabBtnIsozaki" type="button" data-tab="isozaki">磯崎</button>
   </div>
 
   <div class="tab-panel" id="panel-isozaki">
@@ -319,6 +320,42 @@
       <textarea id="outputI"></textarea>
     </div>
   </div><!-- /panel-ichimaru -->
+
+  <div class="tab-panel" id="panel-araki">
+    <div class="card">
+      <p class="step-title"><span class="step-num">1</span>原稿を貼り付け</p>
+      <textarea id="pasteAreaA"></textarea>
+      <div class="row" style="margin-top:10px;">
+        <button id="genBtnA">変換</button>
+        <button class="secondary" id="clearBtnA" type="button">クリア</button>
+      </div>
+    </div>
+    <div class="card">
+      <p class="step-title"><span class="step-num">2</span>価格ルールで一括計算</p>
+      <div class="controls">
+        <div class="field">
+          <label>10,000円値未満の倍率</label>
+          <input type="number" id="lowMultInputA" value="1.15" step="0.01" min="0">
+        </div>
+        <div class="field">
+          <label>10,000円以上の倍率</label>
+          <input type="number" id="highMultInputA" value="1.10" step="0.01" min="0">
+        </div>
+      </div>
+    </div>
+    <div class="card" id="outputCardA" style="display:none;">
+      <p class="step-title"><span class="step-num">3</span>テキスト生成</p>
+      <div class="row" style="margin-bottom:10px;">
+        <button class="secondary" id="copyBtnA" type="button">コピーする</button>
+        <span class="copy-ok" id="copyOkA">✔︎ コピーしました</span>
+      </div>
+      <textarea id="outputA"></textarea>
+      <div class="row" style="margin-top:10px;">
+        <button class="secondary" id="copyBtnA2" type="button">コピーする</button>
+        <span class="copy-ok" id="copyOkA2">✔︎ コピーしました</span>
+      </div>
+    </div>
+  </div><!-- /panel-araki -->
 
 </div>
 
@@ -1382,24 +1419,30 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
   const tabBtnIsozaki = document.getElementById('tabBtnIsozaki');
   const tabBtnKadokura = document.getElementById('tabBtnKadokura');
   const tabBtnIchimaru = document.getElementById('tabBtnIchimaru');
+  const tabBtnAraki = document.getElementById('tabBtnAraki');
   const panelIsozaki = document.getElementById('panel-isozaki');
   const panelKadokura = document.getElementById('panel-kadokura');
   const panelIchimaru = document.getElementById('panel-ichimaru');
+  const panelAraki = document.getElementById('panel-araki');
 
   function switchTab(tab){
     tabBtnIsozaki.classList.toggle('active', tab === 'isozaki');
     tabBtnKadokura.classList.toggle('active', tab === 'kadokura');
     tabBtnIchimaru.classList.toggle('active', tab === 'ichimaru');
+    tabBtnAraki.classList.toggle('active', tab === 'araki');
     panelIsozaki.classList.toggle('active', tab === 'isozaki');
     panelKadokura.classList.toggle('active', tab === 'kadokura');
     panelIchimaru.classList.toggle('active', tab === 'ichimaru');
+    panelAraki.classList.toggle('active', tab === 'araki');
     if (tab === 'isozaki') resizeOutput();
     else if (tab === 'kadokura') resizeOutputK();
+    else if (tab === 'araki') resizeOutputA();
     else resizeOutputI();
   }
   tabBtnIsozaki.addEventListener('click', ()=>switchTab('isozaki'));
   tabBtnKadokura.addEventListener('click', ()=>switchTab('kadokura'));
   tabBtnIchimaru.addEventListener('click', ()=>switchTab('ichimaru'));
+  tabBtnAraki.addEventListener('click', ()=>switchTab('araki'));
 
   // ---- 角倉案内タブ（ルールは追って設定。今は貼り付けたテキストをそのまま整形なしで表示） ----
   const pasteAreaK = document.getElementById('pasteAreaK');
@@ -2542,6 +2585,162 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       setTimeout(()=>{ copyOkI.style.display = 'none'; }, 1800);
     });
   });
+
+  // ============================================================
+  // 荒木鮮魚（角倉・イチマルと同じUI仕様。原稿の書式が独特で、
+  // 「品目名」行の下に小数のサイズ行(例:1.1)と「k価格」行が続く。
+  // ・冒頭の挨拶文など、最初の品目名が出てくるまでの文章は削除
+  // ・小数点を含む行(例:1.1 / 0.5)はサイズとみなし「kg」を付ける
+  // ・名前に「SP」を含む品目は⭐️⭐️、それ以外は⭐️を付ける
+  // ・同じ品目名が続けて出てこないサイズ+価格だけのブロックは、
+  //   直前の品目のサイズ違いとして同じ見出しの下にまとめる
+  // ============================================================
+  const pasteAreaA = document.getElementById('pasteAreaA');
+  const genBtnA = document.getElementById('genBtnA');
+  const clearBtnA = document.getElementById('clearBtnA');
+  const outputCardA = document.getElementById('outputCardA');
+  const outputA = document.getElementById('outputA');
+  const copyBtnA = document.getElementById('copyBtnA');
+  const copyOkA = document.getElementById('copyOkA');
+  const copyBtnA2 = document.getElementById('copyBtnA2');
+  const copyOkA2 = document.getElementById('copyOkA2');
+  const lowMultInputA = document.getElementById('lowMultInputA');
+  const highMultInputA = document.getElementById('highMultInputA');
+
+  const ArakiBuild = (function(){
+    function calcPrice(value, opts){
+      const mult = value < opts.threshold ? opts.lowMult : opts.highMult;
+      const raw = value * mult;
+      const clean = Math.round(raw * 1e6) / 1e6; // 浮動小数点誤差を除去
+      const unit = opts.unit || 100;
+      return Math.ceil(clean / unit) * unit;
+    }
+    function fmtYen(n){ return n.toLocaleString('ja-JP'); }
+
+    const ARAKI_INTRO = [
+      '岩手県、陸前高田市より',
+      '選り抜き鮮魚のご案内です🌊',
+      '',
+      '本日締め→明日納品📦',
+      'いかって届くようなSPな仕立てです🪡‼️',
+    ].join('\n');
+
+    const isSizeLine = (l) => /^\d+\.\d+$/.test(l.trim());
+    const isPriceLine = (l) => /^k[\d,]+/.test(l.trim());
+
+    // 原稿を空行区切りのブロックに分け、品目ごとにまとめる。
+    // 品目名を持たない(サイズ+価格だけの)ブロックは直前の品目のサイズ違いとして扱う。
+    // まだ品目が始まっていない段階で価格行の無いブロック(挨拶文等)は丸ごと捨てる。
+    function process(rawText, opts){
+      const blocks = rawText.replace(/\r\n/g,'\n').split(/\n\s*\n/)
+        .map(b => b.split('\n').map(l=>l.trim()).filter(l=>l.length>0))
+        .filter(lines => lines.length > 0);
+
+      const items = [];
+      let current = null;
+
+      blocks.forEach(lines => {
+        const hasPrice = lines.some(isPriceLine);
+        if (!hasPrice && !current) return; // 品目が始まる前の挨拶文等は削除
+
+        let idx = 0;
+        let name = null;
+        if (!isSizeLine(lines[0]) && !isPriceLine(lines[0])){
+          name = lines[0];
+          idx = 1;
+        }
+
+        const sizes = [];
+        let price = null;
+        for (; idx < lines.length; idx++){
+          const l = lines[idx];
+          if (isSizeLine(l)) sizes.push(l);
+          else if (isPriceLine(l)){
+            const m = l.match(/^k([\d,]+)/);
+            if (m) price = calcPrice(parseInt(m[1].replace(/,/g,''),10), opts);
+          }
+        }
+
+        if (name){
+          current = { name, variants: [] };
+          items.push(current);
+        }
+        if (current && (sizes.length || price != null)){
+          current.variants.push({ sizes, price });
+        }
+      });
+
+      return items;
+    }
+
+    function buildItemLines(item){
+      const star = /SP/.test(item.name) ? '⭐️⭐️' : '⭐️';
+      const lines = [`${star}${item.name}`];
+      item.variants.forEach(v => {
+        const sizeText = v.sizes.length ? `${v.sizes.join('／')}kg` : '';
+        const priceText = v.price != null ? `k${fmtYen(v.price)}` : '';
+        if (sizeText && priceText) lines.push(`・${sizeText} → ${priceText}`);
+        else if (sizeText) lines.push(`・${sizeText}`);
+        else if (priceText) lines.push(`→ ${priceText}`);
+      });
+      return lines;
+    }
+
+    function buildFullOutput(rawText, opts){
+      const items = process(rawText, opts);
+      const body = items.map(it => buildItemLines(it).join('\n')).join('\n\n');
+      return body ? `${ARAKI_INTRO}\n\n${body}` : ARAKI_INTRO;
+    }
+
+    return { process, buildItemLines, buildFullOutput, calcPrice, fmtYen };
+  })();
+
+  function processArakiText(raw, opts){
+    return ArakiBuild.buildFullOutput(raw, opts);
+  }
+
+  // 変換後のテキストは中でスクロールさせず、全文が見えるようにテキストエリア自体を伸ばす（スクロールはページ全体で行う）
+  function resizeOutputA(){
+    if (outputCardA.style.display === 'none') return;
+    if (!panelAraki.classList.contains('active')) return;
+    outputA.style.height = 'auto';
+    outputA.style.height = outputA.scrollHeight + 'px';
+  }
+  window.addEventListener('resize', resizeOutputA);
+
+  genBtnA.addEventListener('click', ()=>{
+    const raw = pasteAreaA.value;
+    if (!raw.trim()){ alert('貼り付けるテキストがありません。'); return; }
+    const opts = {
+      threshold: 10000,
+      lowMult: parseFloat(lowMultInputA.value) || 1,
+      highMult: parseFloat(highMultInputA.value) || 1,
+      unit: 100,
+    };
+    outputA.value = processArakiText(raw, opts);
+    outputCardA.style.display = 'block';
+    resizeOutputA();
+  });
+
+  clearBtnA.addEventListener('click', ()=>{
+    pasteAreaA.value = '';
+    outputA.value = '';
+    outputCardA.style.display = 'none';
+  });
+
+  function copyOutputA(okEl){
+    navigator.clipboard.writeText(outputA.value).then(()=>{
+      okEl.style.display = 'inline';
+      setTimeout(()=>{ okEl.style.display = 'none'; }, 1800);
+    }).catch(()=>{
+      outputA.select();
+      document.execCommand('copy');
+      okEl.style.display = 'inline';
+      setTimeout(()=>{ okEl.style.display = 'none'; }, 1800);
+    });
+  }
+  copyBtnA.addEventListener('click', ()=>copyOutputA(copyOkA));
+  copyBtnA2.addEventListener('click', ()=>copyOutputA(copyOkA2));
 })();
 </script>
 </body>
