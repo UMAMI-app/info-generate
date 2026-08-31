@@ -1597,7 +1597,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     // 季節によって入荷する魚が変わるため、キーワードで大まかに判断する
     function baseClassify(name){
       const n = normalizeName(name);
-      if (/ちりめん|しらす/.test(n)) return '加工品';
+      if (/ちりめん|しらす|筋子/.test(n)) return '加工品';
       if (/イカ/.test(n)) return 'イカ';
       if (/ガニ|カニ/.test(n)) return '甲殻類';
       // 「貝」の字が付く品目は無条件でこのカテゴリーに入れる(オイスター/牡蠣/アワビ・鮑のように「貝」の字が無いものも含める)
@@ -1778,7 +1778,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         if (!current) return;
 
         if (line.startsWith('↑')){
-          if (line.includes('朝締め')){
+          if (line.includes('朝締め') || line.includes('朝〆')){
             current.asaJimeMarker = true;
           } else if (current.variants.length>0){
             // 「↑」の注記は削除せず、「→」に変えて直前の品目にそのまま残す
@@ -1868,6 +1868,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     // 該当しなければnullを返す(通常のウニ品目として扱われる)。
     function parseYuraLine(raw, opts){
       const s = raw.trim();
+      // 「特上」が付いている行は、グレード(SP/上/並)に関わらずマーカーを⭐️にする
+      const isTokujou = /特上/.test(s);
 
       // 特殊パターン:「(上)(並) 入荷有り 価格未定」のように名前が無く、複数グレード共通の注記だけの行
       const bracketMatch = s.match(/^((?:[（(](?:SP|上|並)[)）])+)\s*(.+)$/);
@@ -1917,7 +1919,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       }
 
       const names = [gradeWord ? `${brand}${gradeWord}` : brand];
-      return { kind:'item', grade, names, size, price, arrowNote };
+      return { kind:'item', grade, names, size, price, arrowNote, isTokujou };
     }
 
     // 由良ウニの各行(パース済み)から出力ブロックを組み立てる。
@@ -1937,14 +1939,15 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         list.forEach(it => {
           const key = it.price != null ? `${it.size}|${it.price}` : `note:${it.arrowNote || ''}`;
           let bucket = merged.find(b => b.key === key);
-          if (!bucket){ bucket = { key, names:[], size: it.size, price: it.price, arrowNote: it.arrowNote }; merged.push(bucket); }
+          if (!bucket){ bucket = { key, names:[], size: it.size, price: it.price, arrowNote: it.arrowNote, isTokujou:false }; merged.push(bucket); }
           bucket.names.push(...it.names);
+          if (it.isTokujou) bucket.isTokujou = true;
         });
         merged.forEach(grp => {
-          const marker = YURA_GRADE_MARKER[grade];
+          const marker = grp.isTokujou ? '⭐️' : YURA_GRADE_MARKER[grade];
           const gradeLabel = grade ? `${grade} ) ` : '';
           const nameSize = `${grp.names.join('／')}${grp.size || ''}`;
-          const priceText = grp.price != null ? `1枚×${fmtYen(grp.price)}` : '⚠️要確認';
+          const priceText = grp.price != null ? `${fmtYen(grp.price)}円/枚` : '⚠️要確認';
           const block = [` ${marker} ${gradeLabel}${nameSize} ${priceText}`];
           if (grp.arrowNote) block.push(grp.arrowNote);
           blocks.push(block);
@@ -1997,7 +2000,13 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         const p = K.parseVariantLine(v.raw, opts);
         let line;
         if (p.priceOk){
-          line = p.sizeText ? `${p.sizeText} ${p.priceStr}` : p.priceStr;
+          // ウニは「1枚×16,300」ではなく「16,300円/枚」の表記にする
+          const pm = p.priceStr.match(/^\d*枚×([\d,]+)$/);
+          if (pm){
+            line = p.sizeText ? `${p.sizeText}  ${pm[1]}円/枚` : `${pm[1]}円/枚`;
+          } else {
+            line = p.sizeText ? `${p.sizeText} ${p.priceStr}` : p.priceStr;
+          }
           if (p.tail) line += `  ${p.tail}`;
         } else {
           line = `${v.raw} ⚠️要確認`;
@@ -2091,7 +2100,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         }
       });
 
-      const lines = [`🌟${tag}${title}${origin ? ` (${origin})` : ''}`, ''];
+      const lines = [`🔸${tag}${title}${origin ? ` (${origin})` : ''}`, ''];
 
       // 値上げ計算(稚鮎は10円単位で切り上げ)。同じ価格になったサイズは「/」でまとめる
       const merged = [];
@@ -2428,8 +2437,14 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         if (items.length) catBlocks.push(`【${cat}${K.CATEGORY_EMOJI[cat]}】\n\n` + items.map(it=>it.lines.join('\n')).join('\n\n'));
       });
       wakaayuBlocks.forEach(b => catBlocks.push(b));
-      if (kakouhinItems.length){
-        catBlocks.push(`【加工品】\n※兵庫県、淡路島より\n\n` + kakouhinItems.map(it=>it.lines.join('\n')).join('\n\n'));
+      const kakouhinNormalItems = categoryItems['加工品'] || [];
+      if (kakouhinNormalItems.length || kakouhinItems.length){
+        // 「筋子」など、産地に関わらず加工品カテゴリーに入る通常品目は、
+        // 「※兵庫県、淡路島より」の注記より上に表示する
+        const segments = [];
+        if (kakouhinNormalItems.length) segments.push(kakouhinNormalItems.map(it=>it.lines.join('\n')).join('\n\n'));
+        if (kakouhinItems.length) segments.push(`※兵庫県、淡路島より\n\n` + kakouhinItems.map(it=>it.lines.join('\n')).join('\n\n'));
+        catBlocks.push(`【加工品】\n\n` + segments.join('\n\n'));
       }
 
       parts.push(catBlocks.join('\n\n_ _ _ _ _ _ _ _ _ _ _ _ _ _\n\n'));
