@@ -1889,7 +1889,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       // グレード(SP/上/並)はブランド名の前に付く。「上)」のように閉じ括弧が付くこともある
       const before = s.slice(0, s.indexOf(brand));
       const gm = before.match(/(SP|上|並)[)）]?/);
-      const grade = gm ? gm[1] : '';
+      let grade = gm ? gm[1] : '';
 
       let rest = s.slice(s.indexOf(brand) + brand.length);
 
@@ -1906,7 +1906,15 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       let size = null, price = null, gradeWord = '';
       let m = rest.match(/^\s*約?(\d\S*?)\s*1枚\s*[×xX]?\s*([\d,]+)/);
       if (m){
-        size = normalizeYuraSize(m[1]);
+        let rawSize = m[1];
+        // 「70gSP」「70g上」のように、グレードがブランド名の前ではなくサイズの直後に
+        // 付いてくる書式もあるので、サイズ末尾のSP/上/並を切り出してグレードにする
+        const sgm = rawSize.match(/(SP|上|並)$/);
+        if (sgm && !grade){
+          rawSize = rawSize.slice(0, -sgm[1].length);
+          grade = sgm[1];
+        }
+        size = normalizeYuraSize(rawSize);
         price = K.calcPrice(parseInt(m[2].replace(/,/g,''),10), opts.threshold, opts.lowMult, opts.highMult, opts.unit);
       } else {
         // サイズが無く、「与助特上 13,800  1枚〜」のように
@@ -1937,7 +1945,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         if (!list || !list.length) return;
         const merged = [];
         list.forEach(it => {
-          const key = it.price != null ? `${it.size}|${it.price}` : `note:${it.arrowNote || ''}`;
+          const key = it.price != null ? `${it.size}|${it.price}|${it.arrowNote||''}` : `note:${it.arrowNote || ''}`;
           let bucket = merged.find(b => b.key === key);
           if (!bucket){ bucket = { key, names:[], size: it.size, price: it.price, arrowNote: it.arrowNote, isTokujou:false }; merged.push(bucket); }
           bucket.names.push(...it.names);
@@ -1945,11 +1953,15 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         });
         merged.forEach(grp => {
           const marker = grp.isTokujou ? '⭐️' : YURA_GRADE_MARKER[grade];
-          const gradeLabel = grade ? `${grade} ) ` : '';
-          const nameSize = `${grp.names.join('／')}${grp.size || ''}`;
+          const gradeLabel = grade ? `${grade}) ` : '';
+          const namesText = grp.names.join('／');
+          const qtyText = grp.arrowNote ? ` ${grp.arrowNote}` : '';
           const priceText = grp.price != null ? `${fmtYen(grp.price)}円/枚` : '⚠️要確認';
-          const block = [` ${marker} ${gradeLabel}${nameSize} ${priceText}`];
-          if (grp.arrowNote) block.push(grp.arrowNote);
+          const sizeText = grp.size ? ` (${grp.size})` : '';
+          const block = [
+            ` ${marker} ${gradeLabel}${namesText}${qtyText}`,
+            `${priceText}${sizeText}`,
+          ];
           blocks.push(block);
         });
       });
@@ -2274,7 +2286,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         // 「・天草五和天然赤ウニ」のように品目ごとに「・」で始まる新形式も、
         // グループ名に「ウニ」または「塩水」が含まれていれば同じウニ処理の対象にする
         // (「塩水ムラサキ」のようにウニの字が無い塩水ウニ品目もあるため)
-        if (/ウニ|塩水/.test(group.name)){
+        if (/ウニ|塩水|ムラサキ/.test(group.name)){
           // 行ごとに「廣田丸・与助・秋山丸・山由丸」のいずれかの由良ウニブランド名を
           // 含むかどうかで判定する(空行の有無や産地行の書き方には依存しない)。
           // 該当する行だけ由良ウニ、それ以外は全て通常のウニ品目として扱う。
@@ -2284,7 +2296,15 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           group.variants.forEach(v => {
             const parsed = parseYuraLine(v.raw, opts);
             if (parsed && parsed.kind === 'skip') return; // 欠品行は丸ごと除外
-            if (parsed) yuraParsedLines.push(parsed);
+            if (parsed){
+              // 「↑15枚」のように次行で枚数だけが来るパターンは、
+              // 直前バリアントのarrowNoteとして拾われているので、それを枚数表記に変換する
+              if (parsed.kind === 'item' && !parsed.arrowNote && v.arrowNote){
+                const qm = v.arrowNote.match(/^→(\d+)枚$/);
+                parsed.arrowNote = qm ? `→${qm[1]}枚あり` : v.arrowNote;
+              }
+              yuraParsedLines.push(parsed);
+            }
             else regularVariants.push(v);
           });
           yuraLines.push(...buildYuraSection(yuraParsedLines));
