@@ -1600,7 +1600,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       const n = normalizeName(name);
       if (/ちりめん|しらす|筋子/.test(n)) return '加工品';
       if (/イカ/.test(n)) return 'イカ';
-      if (/ガニ|カニ/.test(n)) return '甲殻類';
+      if (/ガニ|カニ|エビ|えび|海老/.test(n)) return '甲殻類';
       // 「貝」の字が付く品目は無条件でこのカテゴリーに入れる(オイスター/牡蠣/アワビ・鮑のように「貝」の字が無いものも含める)
       if (/貝|ガキ|オイスター|牡蠣|アワビ|鮑/.test(n)) return '貝';
       // 青物・大衆魚：アジ類・イワシ類・サバ類など日常的で手頃な魚
@@ -1802,6 +1802,13 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           return;
         }
 
+        // 「20枚入荷」のように矢印無しで枚数だけの行が続くことがある(由良ウニ等)。
+        // 直前の品目の枚数メモとして扱う
+        if (/^\d+枚(入荷|あり)?$/.test(line) && current.variants.length>0){
+          current.variants[current.variants.length-1].qtyNote = line;
+          return;
+        }
+
         // 丸ウニ系(◎)は産地行の自動判定をせず、全て内容行としてそのままvariantsに積む
         // (品目名に既に産地が入っていないことも多く、判定を専用の組み立て関数側で行うため)
         if (!current.isMaruUni && current.variants.length===0 && current.originLine===null && current.subVariants===null && !/\d/.test(line)){
@@ -1859,8 +1866,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     // (原稿の書式は日によって変わるため、SP/上/並のパターンではなく名前そのもので判定する)。
     // 同じグレード内で価格・サイズが一致するものは名前を「／」で束ねて1行にする。
     const YURA_BRANDS = ['廣田丸', '与助', '秋山丸', '山由丸'];
-    const YURA_GRADE_ORDER = ['SP', '上', '並', ''];
-    const YURA_GRADE_MARKER = { 'SP':'⭐️', '上':'○', '並':'○', '':'○' };
+    const YURA_GRADE_ORDER = ['SP', '特上', '上', '並', ''];
+    const YURA_GRADE_MARKER = { 'SP':'⭐️', '特上':'⭐️', '上':'○', '並':'○', '':'○' };
 
     function normalizeYuraSize(s){
       return s.trim().replace(/-/g, '〜');
@@ -1868,7 +1875,9 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
 
     // 1行が由良ウニ(廣田丸・与助・秋山丸・山由丸のいずれか)の行かどうか判定してパースする。
     // 該当しなければnullを返す(通常のウニ品目として扱われる)。
-    function parseYuraLine(raw, opts){
+    // defaultBrand: 「・由良ウニ兵庫(廣田丸)」のようにブランド名が見出し行の括弧内にあり、
+    // 各行にはグレード+サイズ+価格しか書かれていないケース用に、呼び出し側から渡すブランド名
+    function parseYuraLine(raw, opts, defaultBrand){
       const s = raw.trim();
       // 「特上」が付いている行は、グレード(SP/上/並)に関わらずマーカーを⭐️にする
       const isTokujou = /特上/.test(s);
@@ -1881,19 +1890,29 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         return { kind:'status', grades, status };
       }
 
-      const brand = YURA_BRANDS.find(b => s.includes(b));
-      if (!brand) return null; // 由良ウニの決まったブランド名が無ければ由良ウニ扱いにしない
+      const brandInLine = YURA_BRANDS.find(b => s.includes(b));
+      if (!brandInLine && !defaultBrand) return null; // 由良ウニの決まったブランド名が無ければ由良ウニ扱いにしない
 
       // 「無し」「欠品」「完売」「❌」等は在庫が無いので出力から丸ごと除外する
       // (通常ウニ側にも回さない。kind:'skip' で区別する)
       if (/無し|欠品|完売|❌/.test(s)) return { kind:'skip' };
 
-      // グレード(SP/上/並)はブランド名の前に付く。「上)」のように閉じ括弧が付くこともある
-      const before = s.slice(0, s.indexOf(brand));
-      const gm = before.match(/(SP|上|並)[)）]?/);
-      let grade = gm ? gm[1] : '';
-
-      let rest = s.slice(s.indexOf(brand) + brand.length);
+      let brand, grade = '', rest;
+      if (brandInLine){
+        brand = brandInLine;
+        // グレード(SP/特上/上/並)はブランド名の前に付く。「上)」のように閉じ括弧が付くこともある
+        const before = s.slice(0, s.indexOf(brand));
+        const gm = before.match(/(特上|SP|上|並)[)）]?/);
+        grade = gm ? gm[1] : '';
+        rest = s.slice(s.indexOf(brand) + brand.length);
+      } else {
+        // ブランド名が行に無い場合は見出しの括弧内のブランド名を使い、
+        // 行の先頭に付くグレード表記(例:「SP)」「特上)」)を切り出す
+        brand = defaultBrand;
+        const gm = s.match(/^(特上|SP|上|並)[)）]?/);
+        grade = gm ? gm[1] : '';
+        rest = gm ? s.slice(gm[0].length) : s;
+      }
 
       // 「→次回木曜日着」のような矢印の注記を切り出す
       let arrowNote = null;
@@ -1947,23 +1966,25 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         if (!list || !list.length) return;
         const merged = [];
         list.forEach(it => {
-          const key = it.price != null ? `${it.size}|${it.price}|${it.arrowNote||''}` : `note:${it.arrowNote || ''}`;
+          const key = it.price != null ? `${it.size}|${it.price}|${it.arrowNote||''}|${it.qtyNote||''}` : `note:${it.arrowNote || ''}`;
           let bucket = merged.find(b => b.key === key);
-          if (!bucket){ bucket = { key, names:[], size: it.size, price: it.price, arrowNote: it.arrowNote, isTokujou:false }; merged.push(bucket); }
+          if (!bucket){ bucket = { key, names:[], size: it.size, price: it.price, arrowNote: it.arrowNote, qtyNote: it.qtyNote, isTokujou:false }; merged.push(bucket); }
           bucket.names.push(...it.names);
           if (it.isTokujou) bucket.isTokujou = true;
         });
         merged.forEach(grp => {
           const marker = grp.isTokujou ? '⭐️' : YURA_GRADE_MARKER[grade];
-          const gradeLabel = grade ? `${grade}) ` : '';
           const namesText = grp.names.join('／');
-          const qtyText = grp.arrowNote ? ` ${grp.arrowNote}` : '';
+          const gradeSizeParts = [];
+          if (grade) gradeSizeParts.push(`${grade})`);
+          if (grp.size) gradeSizeParts.push(grp.size);
+          const line1 = gradeSizeParts.length
+            ? `${marker}${namesText} ${gradeSizeParts.join(' ')}`
+            : `${marker}${namesText}`;
           const priceText = grp.price != null ? `${fmtYen(grp.price)}円/枚` : '⚠️要確認';
-          const sizeText = grp.size ? ` (${grp.size})` : '';
-          const block = [
-            ` ${marker} ${gradeLabel}${namesText}${qtyText}`,
-            `${priceText}${sizeText}`,
-          ];
+          const qtySuffix = grp.qtyNote ? ` (${grp.qtyNote})` : '';
+          const block = [line1, `${priceText}${qtySuffix}`];
+          if (grp.arrowNote) block.push(grp.arrowNote);
           blocks.push(block);
         });
       });
@@ -2265,9 +2286,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         // 入荷無し：丸ごと省く
         if (group.originLine === '入荷無し') return;
 
-        // 稚鮎：他のカテゴリーに属さない単独ブロック
+        // 稚鮎：原稿にあっても出力には記載しない
         if (group.name.startsWith('🌟')){
-          wakaayuBlocks.push(buildWakaayuLines(group, opts).join('\n'));
           return;
         }
 
@@ -2302,15 +2322,26 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           // (「由良ウニ兵庫淡路」のような見出しだけの行はどちらにも該当せず自然に除外される)
           const yuraParsedLines = [];
           const regularVariants = [];
+          // 「・由良ウニ兵庫(廣田丸)」のように、ブランド名が見出し行の括弧内に
+          // 書かれているだけで各行には出てこないケースに対応するため、
+          // 見出しの括弧内が由良ウニブランド名ならデフォルトブランドとして使う
+          const groupBrandMatch = group.name.match(/[（(]([^)）]+)[)）]/);
+          const groupBrand = groupBrandMatch ? YURA_BRANDS.find(b => groupBrandMatch[1].includes(b)) : null;
+
           group.variants.forEach(v => {
-            const parsed = parseYuraLine(v.raw, opts);
+            const parsed = parseYuraLine(v.raw, opts, groupBrand);
             if (parsed && parsed.kind === 'skip') return; // 欠品行は丸ごと除外
             if (parsed){
-              // 「↑15枚」のように次行で枚数だけが来るパターンは、
-              // 直前バリアントのarrowNoteとして拾われているので、それを枚数表記に変換する
-              if (parsed.kind === 'item' && !parsed.arrowNote && v.arrowNote){
-                const qm = v.arrowNote.match(/^→(\d+)枚$/);
-                parsed.arrowNote = qm ? `→${qm[1]}枚あり` : v.arrowNote;
+              if (parsed.kind === 'item'){
+                // 「20枚入荷」のように矢印無しでそのまま枚数メモが付くパターン
+                if (v.qtyNote) parsed.qtyNote = v.qtyNote;
+                // 「↑15枚」のように次行で枚数だけが来るパターンは、
+                // 直前バリアントのarrowNoteとして拾われているので、それを枚数メモに変換する
+                if (!parsed.qtyNote && v.arrowNote){
+                  const qm = v.arrowNote.match(/^→(\d+)枚$/);
+                  if (qm) parsed.qtyNote = `${qm[1]}枚あり`;
+                  else if (!parsed.arrowNote) parsed.arrowNote = v.arrowNote;
+                }
               }
               yuraParsedLines.push(parsed);
             }
@@ -2368,7 +2399,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         const asaJime = K.isAsajime(nm, pref, group.asaJimeMarker);
         const cat = asaJime ? '朝締め' : K.baseClassify(nm);
         const lines = buildItemLines(group, { ...opts, keepUnitTail: cat === '加工品' });
-        const isKani = /ガニ|カニ/.test(group.name);
+        const isKani = /ガニ|カニ|エビ|えび|海老/.test(group.name);
         (categoryItems[cat] = categoryItems[cat]||[]).push({ lines, isKani });
       });
 
