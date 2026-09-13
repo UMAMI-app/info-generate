@@ -565,7 +565,7 @@
     // 「3D凍結」のように、凍結・冷凍等のキーワードがタグではなく魚種名側に付くこともあるため、
     // 名前側でも同じキーワードを判定する
     if (/凍結|冷凍|冷|乾燥|干し|燻製|加工/.test(t) || /凍結|冷凍|海苔|燻製|干物|加工/.test(n)) return {dai:'冷凍・加工品', naka:''};
-    if (/村産|農園|産直/.test(t) || /メークイン|ダンシャク|きたあかり|テストロイヤー|デストロイヤー|インカ|いも|芋|ねぎ|ネギ|大根|人参|野菜/.test(n)) return {dai:'青果', naka:''};
+    if (/村産|農園|産直/.test(t) || /メークイン|ダンシャク|きたあかり|テストロイヤー|デストロイヤー|インカ|いも|芋|ねぎ|ネギ|大根|人参|野菜|メロン/.test(n)) return {dai:'青果', naka:''};
     // タグに「活貝」「activeカニ」等、貝・カニ・エビ・ウニを示す語がある場合は、
     // 魚種名が個別の品種リストに無くても貝・甲殻類に分類する
     if (/アワビ|サザエ|ホタテ|カキ|牡蠣|ハマグリ|アサリ|シジミ|カニ|蟹|エビ|海老|ロブスター|ウニ/.test(n) || /貝|カニ|蟹|エビ|海老|ウニ/.test(t)) return {dai:'貝・甲殻類', naka:''};
@@ -678,7 +678,8 @@
             tag, name, origin: normalizeOrigin(row.origin), sizeMain, comment,
             price: Object.assign({}, row.price, {newValue:null}),
             dai, naka,
-            excluded:false,
+            // 「養殖」カテゴリーは基本的に案内しないので、デフォルトでチェックを外す(除外)
+            excluded: dai === '養殖',
             newCategoryPending
           });
         }
@@ -1586,7 +1587,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     }
 
     // ---------------- category classification ----------------
-    const ASAJIME_SPECIES = ['ハモ','メイタカレイ','天然ヒラメ','オコゼ','活天然タイ','アコウ','活イシダイ','アマガレイ'];
+    const ASAJIME_SPECIES = ['ハモ','メイタカレイ','天然ヒラメ','オコゼ','活天然タイ','アコウ','活イシダイ','アマガレイ','アマテガレイ'];
     const CATEGORY_ORDER = ['朝締め','ウニ','甲殻類・貝','青物・大衆魚','季節魚・回遊魚','高級魚・白身','細物','イカ','白子・内臓','加工品'];
     const CATEGORY_EMOJI = {
       '朝締め':'✨','ウニ':'💥','甲殻類・貝':'🦪','貝':'🦪',
@@ -1673,7 +1674,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       }
 
       // 数量単位に数字が直接くっついた価格（1枚14,000 / 1ケ850 / 1玉250 / 1尾1,250 / 1P 4,200 のように間に空白がある場合も許容）
-      m = s.match(/^(.*?)(\d*(?:枚|ケ|ヶ|玉|尾|P|個))\s*([\d,]+)\s*(.*)$/);
+      // ただし「SP」(グレード表記)の「P」を数量単位と誤認しないよう、直前が「S」のPは除外する
+      m = s.match(/^(.*?)(\d*(?:枚|ケ|ヶ|玉|尾|(?<!S)P|個))\s*([\d,]+)\s*(.*)$/);
       if (m){
         const before = m[1].trim();
         const unitTok = m[2].replace(/ケ/, 'ヶ');
@@ -1995,9 +1997,11 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       const size = m[2];
       const price = K.calcPrice(parseInt(m[3].replace(/,/g,''),10), opts.threshold, opts.lowMult, opts.highMult, opts.unit);
       const qtyLine = v.arrowNote ? [v.arrowNote] : [];
+      // 「塩水」と付くウニは「円/枚」ではなく「円/pc」表記にする
+      const uniUnit = /塩水/.test(itemName) ? 'pc' : '枚';
       return [
         `🔸${itemName}${originDisplay}${gradeSuffix}`,
-        `${size}  ${fmtYen(price)}円/枚`,
+        `${size}  ${fmtYen(price)}円/${uniUnit}`,
         ...qtyLine,
       ];
     }
@@ -2008,6 +2012,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     // 品目名はグループ名をそのまま使う
     function buildUniItemFromGroupName(group, regularVariants, opts){
       const lines = [`🔸${group.name}`];
+      // 「塩水」と付くウニは「円/枚」ではなく「円/pc」表記にする
+      const uniUnit = /塩水/.test(group.name) ? 'pc' : '枚';
       regularVariants.forEach(v => {
         const p = K.parseVariantLine(v.raw, opts);
         let line;
@@ -2015,7 +2021,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           // ウニは「1枚×16,300」ではなく「16,300円/枚」の表記にする
           const pm = p.priceStr.match(/^\d*枚×([\d,]+)$/);
           if (pm){
-            line = p.sizeText ? `${p.sizeText}  ${pm[1]}円/枚` : `${pm[1]}円/枚`;
+            line = p.sizeText ? `${p.sizeText}  ${pm[1]}円/${uniUnit}` : `${pm[1]}円/${uniUnit}`;
           } else {
             line = p.sizeText ? `${p.sizeText} ${p.priceStr}` : p.priceStr;
           }
@@ -2284,9 +2290,12 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
 
         // 「・ウニ」で全品目がまとまっている旧形式だけでなく、「・由良ウニ兵庫淡路」
         // 「・天草五和天然赤ウニ」のように品目ごとに「・」で始まる新形式も、
-        // グループ名に「ウニ」または「塩水」が含まれていれば同じウニ処理の対象にする
-        // (「塩水ムラサキ」のようにウニの字が無い塩水ウニ品目もあるため)
-        if (/ウニ|塩水|ムラサキ/.test(group.name)){
+        // グループ名に「ウニ」「塩水」「ムラサキ」「由良」のいずれかが含まれていれば
+        // 同じウニ処理の対象にする(「塩水ムラサキ」のようにウニの字が無い塩水ウニ品目もあるため)。
+        // 原稿の書式が不規則でグループ名にそれらの単語が無くても、行の中に
+        // 由良ウニブランド名(廣田丸・与助・秋山丸・山由丸)があれば同様に扱う
+        const hasYuraBrandLine = group.variants.some(v => YURA_BRANDS.some(b => (v.raw||'').includes(b)));
+        if (/ウニ|塩水|ムラサキ|由良/.test(group.name) || hasYuraBrandLine){
           // 行ごとに「廣田丸・与助・秋山丸・山由丸」のいずれかの由良ウニブランド名を
           // 含むかどうかで判定する(空行の有無や産地行の書き方には依存しない)。
           // 該当する行だけ由良ウニ、それ以外は全て通常のウニ品目として扱う。
