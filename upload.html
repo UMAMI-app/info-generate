@@ -1599,8 +1599,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     function baseClassify(name){
       const n = normalizeName(name);
       if (/ちりめん|しらす|筋子/.test(n)) return '加工品';
-      if (/イカ/.test(n)) return 'イカ';
-      if (/ガニ|カニ|エビ|えび|海老/.test(n)) return '甲殻類';
+      if (/イカ|マダコ/.test(n)) return 'イカ';
+      if (/ガニ|カニ|エビ|えび|海老|ズワイ/.test(n)) return '甲殻類';
       // 「貝」の字が付く品目は無条件でこのカテゴリーに入れる(オイスター/牡蠣/アワビ・鮑のように「貝」の字が無いものも含める)
       if (/貝|ガキ|オイスター|牡蠣|アワビ|鮑/.test(n)) return '貝';
       // 青物・大衆魚：アジ類・イワシ類・サバ類など日常的で手頃な魚
@@ -1673,9 +1673,9 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         return { sizeText: before, priceStr: `×${fmtNum(newVal)}`, tail, priceOk:true };
       }
 
-      // 数量単位に数字が直接くっついた価格（1枚14,000 / 1ケ850 / 1玉250 / 1尾1,250 / 1P 4,200 のように間に空白がある場合も許容）
+      // 数量単位に数字が直接くっついた価格（1枚14,000 / 1ケ850 / 1玉250 / 1尾1,250 / 1P 4,200 / 1杯2,400 のように間に空白がある場合も許容）
       // ただし「SP」(グレード表記)の「P」を数量単位と誤認しないよう、直前が「S」のPは除外する
-      m = s.match(/^(.*?)(\d*(?:枚|ケ|ヶ|玉|尾|(?<!S)P|個))\s*([\d,]+)\s*(.*)$/);
+      m = s.match(/^(.*?)(\d*(?:枚|ケ|ヶ|玉|尾|(?<!S)P|個|杯))\s*([\d,]+)\s*(.*)$/);
       if (m){
         const before = m[1].trim();
         const unitTok = m[2].replace(/ケ/, 'ヶ');
@@ -2259,7 +2259,13 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           // 価格として認識できなかった行は、勝手に計算せずそのまま出して要確認フラグを立てる
           line = `${group.variants[i].raw} ⚠️要確認`;
         } else {
-          line = `${p.sizeText} ${p.priceStr}`;
+          // オオズワイは「1杯×2,800」ではなく「2,800円/杯」の表記にする
+          const pm = /オオズワイ/.test(itemName) ? p.priceStr.match(/^\d*杯×([\d,]+)$/) : null;
+          if (pm){
+            line = p.sizeText ? `${p.sizeText} ${pm[1]}円/杯` : `${pm[1]}円/杯`;
+          } else {
+            line = `${p.sizeText} ${p.priceStr}`;
+          }
           if (p.tail) line += `  ${p.tail}`;
           if (group.variants[i].extraNote) line += ` (${group.variants[i].extraNote})`;
         }
@@ -2398,8 +2404,9 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         const nm = K.normalizeName(itemName);
         const asaJime = K.isAsajime(nm, pref, group.asaJimeMarker);
         const cat = asaJime ? '朝締め' : K.baseClassify(nm);
-        const lines = buildItemLines(group, { ...opts, keepUnitTail: cat === '加工品' });
-        const isKani = /ガニ|カニ|エビ|えび|海老/.test(group.name);
+        // オオズワイは「1杯〜」の単位表記を残したいので、加工品と同様にkeepUnitTailする
+        const lines = buildItemLines(group, { ...opts, keepUnitTail: cat === '加工品' || /オオズワイ/.test(group.name) });
+        const isKani = /ガニ|カニ|エビ|えび|海老|ズワイ/.test(group.name);
         (categoryItems[cat] = categoryItems[cat]||[]).push({ lines, isKani });
       });
 
@@ -2436,6 +2443,20 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       }
 
       return { yuraLines, uniRegularItems, wakaayuBlocks, categoryItems, kakouhinItems };
+    }
+
+    // 「オオズワイ」は、カニ類があればその直後にまとめて記載する(無ければ並び順はそのまま)
+    function groupOozuwaiAfterKani(items){
+      const isOozuwai = it => /オオズワイ/.test(it.lines[0]);
+      const isRealKani = it => /ガニ|カニ/.test(it.lines[0]) && !isOozuwai(it);
+      let lastKaniIdx = -1;
+      items.forEach((it,i)=>{ if (isRealKani(it)) lastKaniIdx = i; });
+      const oozuwaiItems = items.filter(isOozuwai);
+      if (lastKaniIdx === -1 || !oozuwaiItems.length) return items;
+      const rest = items.filter(it => !isOozuwai(it));
+      let insertAt = 0;
+      for (let i=0; i<=lastKaniIdx; i++){ if (!isOozuwai(items[i])) insertAt++; }
+      return [...rest.slice(0, insertAt), ...oozuwaiItems, ...rest.slice(insertAt)];
     }
 
     // 「アジ」を含む品目を、元の並び順を保ったまま一箇所にまとめる（場所・順番自体は問わない）
@@ -2485,7 +2506,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       if (uniRegularItems.length){
         catBlocks.push(`【ウニ${K.CATEGORY_EMOJI['ウニ']}】\n\n` + uniRegularItems.map(l=>l.join('\n')).join('\n\n'));
       }
-      const kaniKai = (categoryItems['甲殻類']||[]).concat(categoryItems['貝']||[]);
+      const kaniKai = groupOozuwaiAfterKani((categoryItems['甲殻類']||[]).concat(categoryItems['貝']||[]));
       if (kaniKai.length){
         const hasKani = kaniKai.some(it=>it.isKani);
         const label = hasKani ? '甲殻類・貝' : '貝';
@@ -2494,7 +2515,12 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       ['青物・大衆魚','季節魚・回遊魚','高級魚・白身','細物','イカ','白子・内臓'].forEach(cat=>{
         let items = categoryItems[cat] || [];
         if (cat === '青物・大衆魚') items = groupAjiTogether(items);
-        if (items.length) catBlocks.push(`【${cat}${K.CATEGORY_EMOJI[cat]}】\n\n` + items.map(it=>it.lines.join('\n')).join('\n\n'));
+        if (!items.length) return;
+        // 「マダコ」があるときはカテゴリー名を「タコ🐙・イカ🦑」にする
+        const label = (cat === 'イカ' && items.some(it => /マダコ/.test(it.lines[0])))
+          ? 'タコ🐙・イカ🦑'
+          : `${cat}${K.CATEGORY_EMOJI[cat]}`;
+        catBlocks.push(`【${label}】\n\n` + items.map(it=>it.lines.join('\n')).join('\n\n'));
       });
       wakaayuBlocks.forEach(b => catBlocks.push(b));
       const kakouhinNormalItems = categoryItems['加工品'] || [];
