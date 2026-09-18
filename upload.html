@@ -678,8 +678,8 @@
             tag, name, origin: normalizeOrigin(row.origin), sizeMain, comment,
             price: Object.assign({}, row.price, {newValue:null}),
             dai, naka,
-            // 中カテゴリ「養殖(活魚)」は基本的に案内しないので、デフォルトでチェックを外す(除外)
-            excluded: /^養殖/.test(naka),
+            // 中カテゴリ「養殖(活魚)」と「コシヒカリ」は基本的に案内しないので、デフォルトでチェックを外す(除外)
+            excluded: /^養殖/.test(naka) || /コシヒカリ/.test(name) || /コシヒカリ/.test(tag),
             newCategoryPending
           });
         }
