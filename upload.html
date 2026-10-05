@@ -2059,7 +2059,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           }
           if (p.tail) line += `  ${p.tail}`;
         } else {
-          line = `${v.raw} ⚠️要確認`;
+          line = fallbackText(v.raw, opts);
         }
         lines.push(line);
         if (v.arrowNote) lines.push(v.arrowNote);
@@ -2112,7 +2112,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           text = `${parsed.sizeText} ${parsed.priceStr}`;
           if (parsed.tail) text += `  ${parsed.tail}`;
         } else {
-          text = `${raw} ⚠️要確認`;
+          text = fallbackText(raw, opts);
         }
         lines.push(pendingGrade ? `${pendingGrade} ${text}` : text);
         pendingGrade = null;
@@ -2174,18 +2174,22 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       // 品目名の（）内のコンマは「・」に統一する(例:「（松浦,花箱）」→「（松浦・花箱）」)
       const name = group.name.replace(/[（(]([^)）]*)[)）]/g, (m, inner) => `（${inner.replace(/,/g,'・')}）`);
 
+      // 「北ウニNo.①」「塩水ウニNo.②」のように番号だけの見出しは、中身の行から品目名を作る
+      const isNumbered = /No\.?\s*[①-⑩0-9]/.test(name);
       let header = `🔸${name}`;
+      let originLine = '';
       let startIdx = 0;
       // 産地行は数字(サイズ)を含まない行のみを対象にする
       // (「250gロシアバフンウニ」のようにサイズ+品種名の行を産地と誤認しないようにするため)
-      if (group.variants.length > 0 && !/\d/.test(group.variants[0].raw)){
+      if (!isNumbered && group.variants.length > 0 && !/\d/.test(group.variants[0].raw) && !/【/.test(group.variants[0].raw)){
         const originInfo = K.parseOriginLine(group.variants[0].raw.trim());
         if (originInfo.originDisplay){
-          header += originInfo.originDisplay;
+          // 長い産地(例:(愛媛・今治赤雲丹))は見出しの次の行に改行して表記する
+          if (originInfo.originDisplay.length > 7) originLine = originInfo.originDisplay;
+          else header += originInfo.originDisplay;
           startIdx = 1;
         }
       }
-      const lines = [header];
 
       // 残りの行から「数字+g」のサイズを1つだけ取り出し、価格行に回す。
       // それ以外のテキストは内容行としてそのまま残す(extraNoteが付いていれば末尾に（）で付け足す)
@@ -2194,24 +2198,48 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       for (let i = startIdx; i < group.variants.length; i++){
         const v = group.variants[i];
         const raw = v.raw.trim();
-        const m = !size ? raw.match(/^(\D*?)(約?\d+g)(\D*)$/) : null;
         let text;
-        if (m){
-          size = m[2];
-          text = (m[1] + m[3]).trim();
+        if (!size && /^約?\d+g?\s*[～〜~\-]\s*\d+g(前後)?$|^約?\d+g前後$/.test(raw)){
+          // 「約60～70g前後」「50g前後」のようにサイズだけの行
+          size = raw;
+          text = '';
         } else {
-          text = raw;
+          const m = !size ? raw.match(/^(\D*?)(約?\d+g)(\D*)$/) : null;
+          if (m){
+            size = m[2];
+            text = (m[1] + m[3]).trim();
+          } else {
+            text = raw;
+          }
         }
         if (v.extraNote) text = text ? `${text}（${v.extraNote}）` : `（${v.extraNote}）`;
         if (text) contentLines.push(text);
       }
+
+      if (isNumbered && contentLines.length){
+        // 1行目を品目名にし、短い【グレード】(例:【黄上】)は名前の後ろに続け、
+        // 長い産地・品種(例:【ロシアバフン】)は次の行に改行する
+        let itemName = contentLines[0];
+        const rest = [];
+        contentLines.slice(1).forEach(t => {
+          const bm = t.match(/^【([^】]+)】$/);
+          if (bm && bm[1].length <= 3 && !/【/.test(itemName)) itemName += t;
+          else rest.push(t);
+        });
+        header = `🔸${itemName}`;
+        contentLines.length = 0;
+        contentLines.push(...rest);
+      }
+
+      const lines = [header];
+      if (originLine) lines.push(originLine);
       lines.push(...contentLines);
 
-      // 価格は原稿の金額をそのまま使う(値上げ計算はしない)。「塩水」を含む品目は「/枚」を付けない
+      // 価格は原稿の金額に通常どおり倍率を掛けて切り上げる。「塩水」を含む品目は「/pc」、それ以外は「/枚」
       if (group.maruUniPrice != null){
-        const priceText = `${fmtYen(group.maruUniPrice)}${group.maruUniHasYen ? '円' : ''}`;
-        const suffix = /塩水/.test(name) ? '' : '/枚';
-        lines.push(`${size}　${priceText}${suffix}`);
+        const price = K.calcPrice(group.maruUniPrice, opts.threshold, opts.lowMult, opts.highMult, opts.unit);
+        const isShiomizu = /塩水/.test(name) || /塩水/.test(header);
+        lines.push(`${size}　${fmtYen(price)}/${isShiomizu ? 'pc' : '枚'}`);
       }
       return lines;
     }
@@ -2223,7 +2251,24 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       const { itemName: rawItemName, originDisplay, trailingNote, extraLine } = resolveNameOrigin(group);
       const itemName = K.normalizeName(rawItemName);
 
-      const parsed = group.variants.map(v => K.parseVariantLine(v.raw, opts));
+      const parsed = group.variants.map(v => {
+        // オオズワイの「5入3k前後 11,500  1cs〜」「5入3k前後 1杯×2400  1杯〜」は
+        // サイズ文字列の「3k」等を価格と誤認しないよう専用に解析し、「円/cs」「円/杯」にする
+        if (/オオズワイ/.test(itemName)){
+          const raw = v.raw.trim();
+          let m = raw.match(/^(.*?)\s*([\d,]+)\s+(\d*cs)\s*([〜～~]?)\s*$/i);
+          if (m){
+            const price = K.calcPrice(parseInt(m[2].replace(/,/g,''),10), opts.threshold, opts.lowMult, opts.highMult, opts.unit);
+            return { sizeText: m[1].trim(), priceStr: `${fmtYen(price)}円/cs`, tail: `${m[3]}${m[4]}`, priceOk:true };
+          }
+          m = raw.match(/^(.*?)\s*\d*杯\s*×\s*([\d,]+)\s*(.*)$/);
+          if (m){
+            const price = K.calcPrice(parseInt(m[2].replace(/,/g,''),10), opts.threshold, opts.lowMult, opts.highMult, opts.unit);
+            return { sizeText: m[1].trim(), priceStr: `${fmtYen(price)}円/杯`, tail: m[3].trim(), priceOk:true };
+          }
+        }
+        return K.parseVariantLine(v.raw, opts);
+      });
 
       // 全バリアントが同じ「(先頭カッコ)」を共有していたら見出し行へ引き上げる
       let hoisted = '';
@@ -2268,7 +2313,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         let line;
         if (!p.priceOk){
           // 価格として認識できなかった行は、勝手に計算せずそのまま出して要確認フラグを立てる
-          line = `${group.variants[i].raw} ⚠️要確認`;
+          line = fallbackText(group.variants[i].raw, opts);
         } else {
           // オオズワイは「1杯×2,800」ではなく「2,800円/杯」の表記にする
           const pm = /オオズワイ/.test(itemName) ? p.priceStr.match(/^\d*杯×([\d,]+)$/) : null;
@@ -2285,6 +2330,22 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       });
       group.notes.forEach(n => lines.push(n));
       return lines;
+    }
+
+    // 想定外の書式で価格を正しく読み取れなかった行は、原稿の文字列はそのまま残しつつ、
+    // 価格らしい数字(サイズ・入数・単位が付く数字は除く)だけは通常ルールで計算し直して差し替え、
+    // 「⚠️要確認」を付ける。価格らしい数字が見つからなければ原稿のまま要確認にする。
+    function fallbackText(raw, opts){
+      const re = /\d[\d,]*(?![\d,]*\s*(?:g|kg|㎏|ｇ|グラム|入|尾|枚|杯|本|個|玉|cs|k))/gi;
+      let last = null, m;
+      while ((m = re.exec(raw)) !== null){
+        const v = parseInt(m[0].replace(/,/g,''),10);
+        if (v >= 100) last = { index: m.index, text: m[0], value: v };
+      }
+      if (!last) return `${raw} ⚠️要確認`;
+      const price = K.calcPrice(last.value, opts.threshold, opts.lowMult, opts.highMult, opts.unit);
+      const shown = /,/.test(last.text) || price >= 1000 ? fmtYen(price) : String(price);
+      return `${raw.slice(0,last.index)}${shown}${raw.slice(last.index+last.text.length)} ⚠️要確認`;
     }
 
     function findFirstDigit(s){ const m = s.match(/\d/); return m ? m.index : s.length; }
