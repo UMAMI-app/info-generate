@@ -1600,6 +1600,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       const n = normalizeName(name);
       if (/ちりめん|しらす|筋子/.test(n)) return '加工品';
       if (/イカ|マダコ/.test(n)) return 'イカ';
+      // 「イシガキダイ」は「ガキ」(牡蠣)を含むが魚なので、貝より先に高級魚・白身へ分類する
+      if (/イシガキダイ/.test(n)) return '高級魚・白身';
       if (/ガニ|カニ|エビ|えび|海老|ズワイ/.test(n)) return '甲殻類';
       // 「貝」の字が付く品目は無条件でこのカテゴリーに入れる(オイスター/牡蠣/アワビ・鮑のように「貝」の字が無いものも含める)
       if (/貝|ガキ|オイスター|牡蠣|アワビ|鮑/.test(n)) return '貝';
