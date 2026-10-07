@@ -2244,6 +2244,34 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       return lines;
     }
 
+    // ---------------- フグ(天然・養殖)。「◎活,天然フグ」「◎海上養殖フグＡ🐡」のような書式で、
+    // 産地行→サイズ行→「・㌔NNN」の価格行が続く。専用カテゴリー【天然・養殖フグ🐡】にまとめる ----------------
+    function buildFuguLines(group, opts){
+      const name = group.name.replace(/🐡/g,'').replace(/[ＡA]\s*$/,'').trim();
+      let origin = '';
+      let size = '';
+      group.variants.forEach(v => {
+        const raw = v.raw.trim();
+        if (!raw) return;
+        if (!/\d/.test(raw) && !origin){
+          const o = raw.replace(/[　\s,，、]+/g,'・');
+          origin = /.他$/.test(o) && !/・他$/.test(o) ? o.replace(/他$/,'・他') : o;
+        } else if (!size){
+          size = raw.replace(/^尾/,'').replace(/㌔/g,'kg').replace(/[～~]/g,'〜');
+        }
+      });
+      const lines = [`🔸${name}${origin ? `(${origin})` : ''}`];
+      let priceText = '⚠️要確認';
+      const priceSrc = group.variants.map(v => v.priceLine || '').find(t => /\d/.test(t)) || '';
+      const pm = priceSrc.match(/([\d,]+)/);
+      if (pm){
+        const price = K.calcPrice(parseInt(pm[1].replace(/,/g,''),10), opts.threshold, opts.lowMult, opts.highMult, opts.unit);
+        priceText = `k${fmtYen(price)}`;
+      }
+      lines.push(`${size}　${priceText}`);
+      return lines;
+    }
+
     // 名前の文字数に関わらず、産地は必ず改行して次の行に記載したい品目
     const FORCE_ORIGIN_NEWLINE_PREFIXES = ['活天然タイ', '仙鳳趾ムキ牡蠣'];
 
@@ -2359,6 +2387,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       const wakaayuBlocks = [];
       const categoryItems = {};
       const kakouhinRaw = [];
+      const fuguItems = [];
 
       groups.forEach(group => {
         // 入荷無し：丸ごと省く
@@ -2377,6 +2406,12 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           const cat = asaJime ? '朝締め' : K.baseClassify(nm);
           const lines = [`🔸${nm}${originDisplay}`, group.originLine];
           (categoryItems[cat] = categoryItems[cat]||[]).push({ lines, isKani:false });
+          return;
+        }
+
+        // フグ(天然・養殖)は専用カテゴリーにまとめる
+        if (/フグ|河豚/.test(group.name)){
+          fuguItems.push(buildFuguLines(group, opts));
           return;
         }
 
@@ -2514,7 +2549,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         }
       }
 
-      return { yuraLines, uniRegularItems, wakaayuBlocks, categoryItems, kakouhinItems };
+      return { yuraLines, uniRegularItems, fuguItems, wakaayuBlocks, categoryItems, kakouhinItems };
     }
 
     // 「オオズワイ」は、カニ類があればその直後にまとめて記載する(無ければ並び順はそのまま)
@@ -2547,7 +2582,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
 
     function buildFullOutput(rawText, opts){
       opts = opts || PRICE_OPTS;
-      const { yuraLines, uniRegularItems, wakaayuBlocks, categoryItems, kakouhinItems } = process(rawText, opts);
+      const { yuraLines, uniRegularItems, fuguItems, wakaayuBlocks, categoryItems, kakouhinItems } = process(rawText, opts);
 
       const tomorrow = new Date();
       tomorrow.setDate(tomorrow.getDate()+1);
@@ -2577,6 +2612,9 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       }
       if (uniRegularItems.length){
         catBlocks.push(`【ウニ${K.CATEGORY_EMOJI['ウニ']}】\n\n` + uniRegularItems.map(l=>l.join('\n')).join('\n\n'));
+      }
+      if (fuguItems.length){
+        catBlocks.push('【天然・養殖フグ🐡】\n→身欠🉑\n→関西のみイケス納品🉑\n\n' + fuguItems.map(l=>l.join('\n')).join('\n\n'));
       }
       const kaniKai = groupOozuwaiAfterKani((categoryItems['甲殻類']||[]).concat(categoryItems['貝']||[]));
       if (kaniKai.length){
