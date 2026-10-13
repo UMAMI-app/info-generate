@@ -1131,9 +1131,12 @@ sys.modules['snappy'] = _fake_snappy
     // numbers-parser自体はdeps=Falseで依存自動解決を止め(snappyは上で純Python実装に
     // 差し替え済みなので不要)、他の純Python依存パッケージは通常通り(deps=True)
     // インストールして、それぞれの安全な(バイナリ拡張を持たない)依存も一緒に入れる。
+    // numbers-parser 4.20.0(2026-10-10)はprotobuf gencode 7.36.2で生成されたコードを
+    // 含むが、Pyodide側のprotobufランタイムは7.34.1のため読み込みエラーになる。
+    // 4.19.0は同ランタイムで問題なく動作するためバージョンを固定する。
     await pyodide.runPythonAsync(`
 import micropip
-await micropip.install(['numbers-parser'], deps=False)
+await micropip.install(['numbers-parser==4.19.0'], deps=False)
 await micropip.install([
     'compact-json',
     'sigfig',
