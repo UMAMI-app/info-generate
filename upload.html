@@ -2730,8 +2730,12 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     return String(rounded);
   }
 
+  const ICHIMARU_PRICE_RE = /(?<![\d\w])(kg|k|@)\s?(\d[\d,]*)/g;
   function convertIchimaruLine(line, opts){
-    return line.replace(/([k@])([\d,]+)/g, (m, sym, digits) => sym + ichimaruMarkupPrice(digits, opts));
+    // 価格は「k1550」「kg1550」「@1550」の形。サイズ・入数に付く「4.4k」「1.8k4s」の「k」を
+    // 価格と取り違えないよう、直前が数字・英字でない「k/kg/@」だけを価格として扱う。
+    // 「kg」表記の価格は他と同じ「k」表記にそろえる
+    return line.replace(ICHIMARU_PRICE_RE, (m, sym, digits) => (sym === '@' ? '@' : 'k') + ichimaruMarkupPrice(digits, opts));
   }
 
   // 商品名に含まれるキーワードに応じて、名前の後ろに絵文字を付ける
@@ -2746,7 +2750,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
 
   const ICHIMARU_INTRO = '北海道より直送‼️\n明日着オススメ食材です💁‍♂️';
 
-  const isIchimaruPriceLine = (l)=> /[k@][\d,]+/.test(l);
+  const isIchimaruPriceLine = (l)=> /(?<![\d\w])(kg|k|@)\s?\d/.test(l);
 
   // 原稿は品目ごとに空行で区切られている。最初の価格付き品目が出てくる前に
   // 挟まる「電波調子悪く〜」のような前置き文章(価格が付かない段落)は削除する。
@@ -2757,14 +2761,13 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       .map(block => block.split('\n').map(l=>l.trim()).filter(l=>l.length>0))
       .filter(lines => lines.length > 0);
 
-    let seenPricedItem = false;
     const outBlocks = [];
     blocks.forEach(lines=>{
-      const hasPrice = lines.some(isIchimaruPriceLine);
-      if (!hasPrice && !seenPricedItem) return; // 品目が始まる前の前置き文章は削除
-      if (hasPrice) seenPricedItem = true;
+      // 価格が付かない段落(挨拶文・「よろしくお願いします！」等)は商品ではないので削除
+      if (!lines.some(isIchimaruPriceLine)) return;
       const converted = lines.map(l => convertIchimaruLine(l, opts));
-      if (hasPrice) converted[0] = `◆ ${converted[0]}${ichimaruNameEmoji(converted[0])}`;
+      // 数字で始まる段落(「1尾入り」「2.9kg4尾」等)は直前の品目のサイズ違いなので、品目名の◆は付けない
+      if (!/^\d/.test(converted[0])) converted[0] = `◆ ${converted[0]}${ichimaruNameEmoji(converted[0])}`;
       outBlocks.push(converted.join('\n'));
     });
 
