@@ -2734,8 +2734,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
   function convertIchimaruLine(line, opts){
     // 価格は「k1550」「kg1550」「@1550」の形。サイズ・入数に付く「4.4k」「1.8k4s」の「k」を
     // 価格と取り違えないよう、直前が数字・英字でない「k/kg/@」だけを価格として扱う。
-    // 「kg」表記の価格は他と同じ「k」表記にそろえる
-    return line.replace(ICHIMARU_PRICE_RE, (m, sym, digits) => (sym === '@' ? '@' : 'k') + ichimaruMarkupPrice(digits, opts));
+    // 価格は「kg」表記・3桁カンマ区切りで出力する
+    return line.replace(ICHIMARU_PRICE_RE, (m, sym, digits) => (sym === '@' ? '@' : 'kg') + Number(ichimaruMarkupPrice(digits, opts)).toLocaleString('en-US'));
   }
 
   // 商品名に含まれるキーワードに応じて、名前の後ろに絵文字を付ける
