@@ -1278,10 +1278,17 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     return groups;
   }
 
+  // 【】内がこの文字数以上の場合は、【】の後ろで改行する
+  const TAG_BREAK_MIN_LENGTH = 5;
+  // 文字数に関わらず必ず改行するタグ
+  const TAG_BREAK_FORCED = ['神経締め', '空輸'];
   function itemGroupLines(group){
     const tagPart = group.tag ? `【${group.tag}】` : '';
     const originPart = group.origin ? `／${group.origin}` : '';
-    const lines = [`🔸${tagPart}${group.name}${originPart}`];
+    const shouldBreakAfterTag = group.tag && (group.tag.length >= TAG_BREAK_MIN_LENGTH || TAG_BREAK_FORCED.includes(group.tag));
+    const lines = shouldBreakAfterTag
+      ? [`🔸${tagPart}`, `${group.name}${originPart}`]
+      : [`🔸${tagPart}${group.name}${originPart}`];
     group.items.forEach(it=>{
       const priceStr = formatPrice(it.price);
       if (it.sizeMain){
@@ -1388,10 +1395,10 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       '明日朝8:00までのご注文で',
       `${m}/${d}(${wd})当日配達可能です🚚`,
       '',
-      `宅急便での翌日(${wd}曜日)着も可能📦`,
+      `宅急便での翌日(${wd}曜日)着可能📦`,
       '',
       '⚠️当日配達は都心のお客様限定',
-      '　→送料1000円(税抜)',
+      '→送料1000円(税抜)',
     ].join('\n');
   }
 
@@ -1611,6 +1618,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       if (/貝|ガキ|オイスター|牡蠣|アワビ|鮑/.test(n)) return '貝';
       // 助子・筋子は白子・内臓カテゴリーへ
       if (/助子|筋子/.test(n)) return '白子・内臓';
+      // 「シマアジ」は「アジ」を含むが高級魚なので、青物・大衆魚より先に判定する
+      if (/シマアジ/.test(n)) return '高級魚・白身';
       // 青物・大衆魚：アジ類・イワシ類・サバ類・小肌など日常的で手頃な魚
       if (/アジ|イワシ|サバ|小肌/.test(n)) return '青物・大衆魚';
       // 季節魚・回遊魚：カツオ類（ガツオ）・マグロ幼魚・サワラ・サゴシ・ブリ系・シイラ・イサキなど季節性の強い回遊魚
@@ -1671,6 +1680,17 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         const { text: tail } = stripUnitTail(m[4].trim(), opts.keepUnitTail);
         const newVal = calcPrice(val, opts.threshold, opts.lowMult, opts.highMult, opts.unit);
         return { sizeText: before, priceStr: symbol + fmtNum(newVal), tail, priceOk:true };
+      }
+
+      // 「500g×1P 3,600」のように「サイズ×個数単位 価格」の形式(×の直後は個数単位で、
+      // 価格はスペースを挟んだ別の数字)。×プレフィックス判定(単純な「×価格」)より先に試す
+      m = s.match(/^(.*?×\d*(?:枚|ケ|ヶ|玉|尾|(?<!S)P|個|杯))\s+([\d,]+)\s*(.*)$/);
+      if (m){
+        const before = m[1].trim();
+        const val = parseInt(m[2].replace(/,/g,''),10);
+        const { text: tail } = stripUnitTail(m[3].trim(), opts.keepUnitTail);
+        const newVal = calcPrice(val, opts.threshold, opts.lowMult, opts.highMult, opts.unit);
+        return { sizeText: before, priceStr: fmtNum(newVal), tail, priceOk:true };
       }
 
       // ×プレフィックス価格（既に×表記の場合。加工品や宮津トリ貝の変換後などで使用）
@@ -2529,8 +2549,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         const nm = K.normalizeName(itemName);
         const asaJime = K.isAsajime(nm, pref, group.asaJimeMarker);
         const cat = asaJime ? '朝締め' : K.baseClassify(nm);
-        // オオズワイ・イワシは「1杯〜」「0.5cs〜」等の単位表記を残したいので、加工品と同様にkeepUnitTailする
-        const lines = buildItemLines(group, { ...opts, keepUnitTail: cat === '加工品' || /オオズワイ|イワシ/.test(group.name) });
+        // オオズワイ・イワシ・小肌は「1杯〜」「0.5cs〜」「1P〜」等の単位表記を残したいので、加工品と同様にkeepUnitTailする
+        const lines = buildItemLines(group, { ...opts, keepUnitTail: cat === '加工品' || /オオズワイ|イワシ|小肌/.test(group.name) });
         const isKani = /ガニ|カニ|エビ|えび|海老|ズワイ/.test(group.name);
         (categoryItems[cat] = categoryItems[cat]||[]).push({ lines, isKani });
       });
@@ -2596,6 +2616,18 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       return [...others.slice(0, othersBeforeCount), ...ajiItems, ...others.slice(othersBeforeCount)];
     }
 
+    // 「サワラ」を含む品目を、元の並び順を保ったまま一箇所にまとめる(サゴシ等は後に残る)
+    function groupSawaraTogether(items){
+      const isSawara = it => /サワラ/.test(it.lines[0]);
+      const firstSawaraIdx = items.findIndex(isSawara);
+      if (firstSawaraIdx === -1) return items;
+      const sawaraItems = items.filter(isSawara);
+      const others = items.filter(it => !isSawara(it));
+      let othersBeforeCount = 0;
+      for (let i=0; i<firstSawaraIdx; i++){ if (!isSawara(items[i])) othersBeforeCount++; }
+      return [...others.slice(0, othersBeforeCount), ...sawaraItems, ...others.slice(othersBeforeCount)];
+    }
+
     function weekdayJa(d){ return ['日','月','火','水','木','金','土'][d.getDay()]; }
 
     function buildFullOutput(rawText, opts){
@@ -2604,12 +2636,12 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
 
       const tomorrow = new Date();
       tomorrow.setDate(tomorrow.getDate()+1);
-      const header = `【${tomorrow.getMonth()+1}/${tomorrow.getDate()}(${weekdayJa(tomorrow)})入荷】鮮魚案内🐟✨\n_______________________`;
+      const header = `【${tomorrow.getMonth()+1}/${tomorrow.getDate()}(${weekdayJa(tomorrow)})入荷】鮮魚案内🐟✨\n\n 淡路周辺を得意とする兵庫県の魚屋さんより🌊\n_______________________`;
 
       const footer = [
         '────────────','',
         '【 📋 ご注文について 】','',
-        '🕐 今晩中のご注文','　→ 航空便にて翌日15時頃お届け','　※都心店舗限定','　　（送料約2,500〜3,000円）','',
+        '🕐 今晩中のご注文','　→ 航空便にて翌日15時頃お届け','　※都心店舗限定','　（送料約2,500〜3,000円）','',
         '🚛 宅急便翌日発送も対応可','',
         '⚠️ 処理指定はご注文時にお知らせください','⚠️ 発注は必ずグループLINEへ','',
         '────────────','',
@@ -2643,10 +2675,12 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       ['青物・大衆魚','季節魚・回遊魚','高級魚・白身','細物','イカ','白子・内臓'].forEach(cat=>{
         let items = categoryItems[cat] || [];
         if (cat === '青物・大衆魚') items = groupAjiTogether(items);
+        if (cat === '季節魚・回遊魚') items = groupSawaraTogether(items);
         if (!items.length) return;
         // 「マダコ」があるときはカテゴリー名に「タコ🐙」を含める。
         // イカ(マダコ以外)が無ければ「タコ🐙」のみ、あれば「タコ🐙・イカ🦑」にする
-        let label = `${cat}${K.CATEGORY_EMOJI[cat]}`;
+        // 表示名は「白子・内臓・魚卵」にする(内部の分類キーは互換のため「白子・内臓」のまま)
+        let label = `${cat === '白子・内臓' ? '白子・内臓・魚卵' : cat}${K.CATEGORY_EMOJI[cat]}`;
         if (cat === 'イカ'){
           const hasMadako = items.some(it => /マダコ/.test(it.lines[0]));
           const hasOtherIka = items.some(it => !/マダコ/.test(it.lines[0]));
