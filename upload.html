@@ -1541,7 +1541,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         }
       }
       const pref = normalizePref(bestPref);
-      const originDisplay = place ? `(${pref}・${place})` : `(${pref})`;
+      // 「宮城/福島」のように「/」区切りで複数の産地が並ぶ場合は「・」を挟まずそのまま繋げる
+      const originDisplay = !place ? `(${pref})` : place.startsWith('/') ? `(${pref}${place})` : `(${pref}・${place})`;
       return { itemName, originDisplay, trailingNote, pref };
     }
 
@@ -1601,15 +1602,17 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     // 季節によって入荷する魚が変わるため、キーワードで大まかに判断する
     function baseClassify(name){
       const n = normalizeName(name);
-      if (/ちりめん|しらす|筋子/.test(n)) return '加工品';
+      if (/ちりめん|しらす/.test(n)) return '加工品';
       if (/イカ|マダコ/.test(n)) return 'イカ';
       // 「イシガキダイ」は「ガキ」(牡蠣)を含むが魚なので、貝より先に高級魚・白身へ分類する
       if (/イシガキダイ/.test(n)) return '高級魚・白身';
       if (/ガニ|カニ|エビ|えび|海老|ズワイ/.test(n)) return '甲殻類';
       // 「貝」の字が付く品目は無条件でこのカテゴリーに入れる(オイスター/牡蠣/アワビ・鮑のように「貝」の字が無いものも含める)
       if (/貝|ガキ|オイスター|牡蠣|アワビ|鮑/.test(n)) return '貝';
-      // 青物・大衆魚：アジ類・イワシ類・サバ類など日常的で手頃な魚
-      if (/アジ|イワシ|サバ/.test(n)) return '青物・大衆魚';
+      // 助子・筋子は白子・内臓カテゴリーへ
+      if (/助子|筋子/.test(n)) return '白子・内臓';
+      // 青物・大衆魚：アジ類・イワシ類・サバ類・小肌など日常的で手頃な魚
+      if (/アジ|イワシ|サバ|小肌/.test(n)) return '青物・大衆魚';
       // 季節魚・回遊魚：カツオ類（ガツオ）・マグロ幼魚・サワラ・サゴシ・ブリ系・シイラ・イサキなど季節性の強い回遊魚
       if (/カツオ|ガツオ|ヨコワ|マグロ|サワラ|サゴシ|ブリ|ハマチ|メジロ|ワラサ|カンパチ|シイラ|サンマ|イサキ/.test(n)) return '季節魚・回遊魚';
       // 高級魚・白身：キンキ・メヌケ・ギンダラ・キンメ・アマダイ・ムツ類・ノドグロ・クエ・ハタ類・ヒラメ・カレイ類など
@@ -1645,6 +1648,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     function parseVariantLine(raw, opts){
       opts = opts || {};
       let s = raw.trim();
+      // 「尾1.5kサイズ」のように数字の直前に付く「尾」はサイズの単位ではなく接頭語なので除去する
+      s = s.replace(/^尾(?=\d)/, '');
 
       // 背/腹の2価格パターン
       let m = s.match(/^(.*?)\s*背k([\d,]+)\s*腹k([\d,]+)\s*(.*)$/);
@@ -2048,7 +2053,11 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     // 産地が名前の前に付く書き方(「愛媛今治 赤ウニ」等)もあり自動抽出が難しいため、
     // 品目名はグループ名をそのまま使う
     function buildUniItemFromGroupName(group, regularVariants, opts){
-      const lines = [`🔸${group.name}`];
+      // 名前に「【】」が付いている場合は改行してから【】部分を表記する
+      const bracketMatch = group.name.match(/^(.*?)\s*(【[^】]*】.*)$/);
+      const lines = bracketMatch
+        ? [`🔸${bracketMatch[1].trim()}`, bracketMatch[2].trim()]
+        : [`🔸${group.name}`];
       // 「塩水」と付くウニは「円/枚」ではなく「円/pc」表記にする
       const uniUnit = /塩水/.test(group.name) ? 'pc' : '枚';
       regularVariants.forEach(v => {
@@ -2416,7 +2425,9 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
 
         // フグ(天然・養殖)は専用カテゴリーにまとめる
         if (/フグ|河豚/.test(group.name)){
-          fuguItems.push(buildFuguLines(group, opts));
+          // 「◎活,天然フグ」等の専用書式だけbuildFuguLinesを使い、
+          // 「・天フグ宮城/福島」のような通常の「・」形式は他の品目と同じ組み立てにする
+          fuguItems.push(group.isMaruUni ? buildFuguLines(group, opts) : buildItemLines(group, opts));
           return;
         }
 
@@ -2433,7 +2444,9 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         // 原稿の書式が不規則でグループ名にそれらの単語が無くても、行の中に
         // 由良ウニブランド名(廣田丸・与助・秋山丸・山由丸)があれば同様に扱う
         const hasYuraBrandLine = group.variants.some(v => YURA_BRANDS.some(b => (v.raw||'').includes(b)));
-        if (/ウニ|塩水|ムラサキ|由良/.test(group.name) || hasYuraBrandLine){
+        // 「由良」単独だと「白甘鯛(兵庫・淡路由良)」のような産地名と衝突するため、
+        // 「由良ウニ」の形でなければウニ扱いしない
+        if (/ウニ|塩水|ムラサキ|由良ウニ/.test(group.name) || hasYuraBrandLine){
           // 行ごとに「廣田丸・与助・秋山丸・山由丸」のいずれかの由良ウニブランド名を
           // 含むかどうかで判定する(空行の有無や産地行の書き方には依存しない)。
           // 該当する行だけ由良ウニ、それ以外は全て通常のウニ品目として扱う。
