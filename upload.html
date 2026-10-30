@@ -2281,8 +2281,13 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     // ---------------- フグ(天然・養殖)。「◎活,天然フグ」「◎海上養殖フグＡ🐡」のような書式で、
     // 産地行→サイズ行→「・㌔NNN」の価格行が続く。専用カテゴリー【天然・養殖フグ🐡】にまとめる ----------------
     function buildFuguLines(group, opts){
-      const name = group.name.replace(/🐡/g,'').replace(/[ＡA]\s*$/,'').trim();
+      const name = group.name.replace(/🐡/g,'').trim();
+      // 「・」形式は産地行がgroup.originLineに入るが、「◎」形式はvariantsの先頭行に入るため両対応する
       let origin = '';
+      if (group.originLine){
+        const o = group.originLine.trim().replace(/[　\s,，、]+/g,'・');
+        origin = /.他$/.test(o) && !/・他$/.test(o) ? o.replace(/他$/,'・他') : o;
+      }
       let size = '';
       group.variants.forEach(v => {
         const raw = v.raw.trim();
@@ -2291,7 +2296,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           const o = raw.replace(/[　\s,，、]+/g,'・');
           origin = /.他$/.test(o) && !/・他$/.test(o) ? o.replace(/他$/,'・他') : o;
         } else if (!size){
-          size = raw.replace(/^尾/,'').replace(/㌔/g,'kg').replace(/[～~]/g,'〜');
+          size = raw.replace(/㌔/g,'kg').replace(/[～~]/g,'〜');
         }
       });
       const lines = [`🔸${name}${origin ? `(${origin})` : ''}`];
@@ -2445,9 +2450,11 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
 
         // フグ(天然・養殖)は専用カテゴリーにまとめる
         if (/フグ|河豚/.test(group.name)){
-          // 「◎活,天然フグ」等の専用書式だけbuildFuguLinesを使い、
-          // 「・天フグ宮城/福島」のような通常の「・」形式は他の品目と同じ組み立てにする
-          fuguItems.push(group.isMaruUni ? buildFuguLines(group, opts) : buildItemLines(group, opts));
+          // 産地行→サイズ行→「・㌔NNN」の価格行、という専用書式(「・」「◎」どちらの先頭記号でも
+          // 起こりうる)だけbuildFuguLinesを使い、「・天フグ宮城/福島」のようにサイズと価格が
+          // 1行にまとまった通常形式は他の品目と同じ組み立てにする
+          const hasFuguPriceLine = group.variants.some(v => v.priceLine);
+          fuguItems.push(hasFuguPriceLine ? buildFuguLines(group, opts) : buildItemLines(group, opts));
           return;
         }
 
