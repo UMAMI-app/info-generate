@@ -1495,6 +1495,19 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     const FOREIGN = ['韓国','中国','ノルウェー','ロシア','ベトナム','チリ','アメリカ','台湾'];
     const ORIGIN_NAMES = [...PREFS, ...FOREIGN];
 
+    // 「仙鳳趾」等、商品名としても使われるため産地の末尾に紛れ込みやすい語。
+    // 他の地名の後ろに続く形でのみ切り落とす(例:「北海道厚岸 仙鳳趾」→「北海道・厚岸」。
+    // 「北海道,仙鳳趾」のように単独でその語自体が産地の場合は残す)
+    const ORIGIN_NOISE_WORDS = ['仙鳳趾'];
+    function stripOriginNoiseWords(place){
+      let p = place;
+      ORIGIN_NOISE_WORDS.forEach(w=>{
+        const m = p.match(new RegExp(`(.+)[ 　]+${w}[ 　]*$`));
+        if (m) p = m[1].trim();
+      });
+      return p;
+    }
+
     function normalizePref(pref){
       // ORIGIN_NAMES の要素はすでに表示したい短い形（例:「京都」「兵庫」）そのものなので、
       // ここでは何も削らずそのまま返す（誤って「京都」→「京」のように壊さないため）。
@@ -1544,7 +1557,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           trailingNote = noteMatch[1].trim();
           right = '';
         } else {
-          place = right.replace(/[,、]/g,'').trim();
+          place = stripOriginNoiseWords(right.replace(/[,、]/g,'').trim());
         }
       }
       const pref = normalizePref(bestPref);
@@ -1573,12 +1586,17 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       if (/^[都道府県]/.test(s.slice(matchEnd)) && !bestPref.endsWith(s[matchEnd])) matchEnd += 1;
       let rest = s.slice(matchEnd).trim();
       rest = rest.replace(/^[,、]\s*/, '');
+      rest = stripOriginNoiseWords(rest);
 
-      let place = '', trailingNote = '';
+      let place = '', trailingNote = '', bracketNote = '';
       const trailParen = rest.match(/^(.*?)[（(]([^)）]+)[)）]\s*$/);
       if (trailParen && trailParen[1].trim()){
         place = trailParen[1].trim();
         trailingNote = trailParen[2].trim();
+      } else if (trailParen){
+        // 産地の後ろが丸ごと「（養殖玉Ａ）」のような注記だけの場合は、
+        // 産地表記には混ぜず、括弧付きのまま別行の注記として返す
+        bracketNote = `（${trailParen[2].trim()}）`;
       } else if (rest.includes(' ')){
         const idx = rest.indexOf(' ');
         place = rest.slice(0, idx).trim();
@@ -1587,7 +1605,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         place = rest;
       }
       const originDisplay = place ? `(${pref}・${place})` : `(${pref})`;
-      return { originDisplay, trailingNote, pref };
+      return { originDisplay, trailingNote, pref, bracketNote };
     }
 
     // ---------------- name normalization ----------------
@@ -1614,8 +1632,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       // 「イシガキダイ」は「ガキ」(牡蠣)を含むが魚なので、貝より先に高級魚・白身へ分類する
       if (/イシガキダイ/.test(n)) return '高級魚・白身';
       if (/ガニ|カニ|エビ|えび|海老|ズワイ/.test(n)) return '甲殻類';
-      // 「貝」の字が付く品目は無条件でこのカテゴリーに入れる(オイスター/牡蠣/アワビ・鮑のように「貝」の字が無いものも含める)
-      if (/貝|ガキ|オイスター|牡蠣|アワビ|鮑/.test(n)) return '貝';
+      // 「貝」の字が付く品目は無条件でこのカテゴリーに入れる(オイスター/牡蠣/カキ/ホタテ/蛤/アワビ・鮑のように「貝」の字が無いものも含める)
+      if (/貝|[カガ]キ|オイスター|牡蠣|ホタテ|蛤|アワビ|鮑/.test(n)) return '貝';
       // 助子・筋子は白子・内臓カテゴリーへ
       if (/助子|筋子/.test(n)) return '白子・内臓';
       // 「シマアジ」は「アジ」を含むが高級魚なので、青物・大衆魚より先に判定する
@@ -1775,9 +1793,9 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           return;
         }
 
-        // 開穴子のように「サイズ行」の次に「・㌔NNNN」で価格だけが別行になっているケース。
+        // 開穴子のように「サイズ行」の次に「・㌔NNNN」「・代金NNNN」で価格だけが別行になっているケース。
         // 通常の「・品目」より先に判定し、直前のサイズ行に価格をぶら下げる。
-        if (current && current.variants.length>0 && /^[・･]?㌔/.test(line)){
+        if (current && current.variants.length>0 && /^[・･]?(㌔|代金)/.test(line)){
           current.variants[current.variants.length-1].priceLine = line.replace(/^[・･]/, '');
           return;
         }
@@ -1893,7 +1911,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         const fromName = K.extractNameAndOrigin(group.name);
         const fromOriginLine = K.parseOriginLine(group.originLine);
         if (fromOriginLine.originDisplay){
-          return { itemName: fromName.itemName, originDisplay: fromOriginLine.originDisplay, trailingNote: fromOriginLine.trailingNote, pref: fromOriginLine.pref, extraLine: null };
+          return { itemName: fromName.itemName, originDisplay: fromOriginLine.originDisplay, trailingNote: fromOriginLine.trailingNote, pref: fromOriginLine.pref, extraLine: fromOriginLine.bracketNote || null };
         }
         // 産地行に産地情報が無い場合(例:「(Aウロコブランド)」のようなブランド表記)は、
         // 名前側に既にある産地情報をそのまま使い、産地行の内容は別行の注記として残す
@@ -2314,6 +2332,13 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     // 名前の文字数に関わらず、産地は必ず改行して次の行に記載したい品目
     const FORCE_ORIGIN_NEWLINE_PREFIXES = ['活天然タイ', '仙鳳趾ムキ牡蠣'];
 
+    // 「1ケ〜」「1k〜」のような個数・ケース単位の最少受注メモは表示上不要なので落とす。
+    // 「500g〜」のような重量のしきい値は情報として残す
+    function trimPcTail(tail){
+      const t = (tail || '').trim();
+      return /^\d*(尾|杯|枚|ケ|ヶ|P|p|個|k|cs)\s*〜$/.test(t) ? '' : t;
+    }
+
     function buildItemLines(group, opts){
       const { itemName: rawItemName, originDisplay, trailingNote, extraLine } = resolveNameOrigin(group);
       const itemName = K.normalizeName(rawItemName);
@@ -2334,6 +2359,29 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
             return { sizeText: m[1].trim(), priceStr: `${fmtYen(price)}円/杯`, tail: m[3].trim(), priceOk:true };
           }
         }
+
+        // 「サイズ行」の次に「・㌔NNNN」「・代金NNNN」で価格だけが別行になっている品目
+        if (v.priceLine){
+          const pm = v.priceLine.match(/^(㌔|代金)([\d,]+)(.*)$/);
+          if (pm){
+            const price = K.calcPrice(parseInt(pm[2].replace(/,/g,''),10), opts.threshold, opts.lowMult, opts.highMult, opts.unit);
+            const priceStr = pm[1] === '代金' ? `${fmtYen(price)}/pc` : `k${fmtYen(price)}`;
+            const sizeText = v.raw.trim().replace(/^＠/, '').replace(/^玉(?!\/)/, '玉/');
+            return { sizeText, priceStr, tail: trimPcTail(pm[3]), priceOk:true, fullWidthSep:true };
+          }
+        }
+
+        // 貝・カキ類で「サイズ×1P 価格」の形式(オオズワイの杯・csと同様、個数単位は
+        // 「pc」表記にし、価格は「price/pc」で示す)
+        if (/オイスター|カキ/.test(itemName)){
+          const raw = v.raw.trim();
+          const m = raw.match(/^(.*?)×(\d*)(?:枚|ケ|ヶ|玉|尾|P|個|杯)\s+([\d,]+)/);
+          if (m){
+            const price = K.calcPrice(parseInt(m[3].replace(/,/g,''),10), opts.threshold, opts.lowMult, opts.highMult, opts.unit);
+            return { sizeText: `${m[1].trim()}×${m[2] || '1'}pc`, priceStr: `${fmtYen(price)}/pc`, tail:'', priceOk:true, fullWidthSep:true };
+          }
+        }
+
         return K.parseVariantLine(v.raw, opts);
       });
 
@@ -2387,7 +2435,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           if (pm){
             line = p.sizeText ? `${p.sizeText} ${pm[1]}円/杯` : `${pm[1]}円/杯`;
           } else {
-            line = `${p.sizeText} ${p.priceStr}`;
+            line = `${p.sizeText}${p.fullWidthSep ? '　' : ' '}${p.priceStr}`;
           }
           if (p.tail) line += `  ${p.tail}`;
           if (group.variants[i].extraNote) line += ` (${group.variants[i].extraNote})`;
