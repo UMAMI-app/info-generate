@@ -1786,6 +1786,9 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       function pushLine(line){
         if (line === '兵庫淡路島'){ inKakouhin = true; return; }
 
+        // 「〜ウニ〜」はウニの品目が始まる前に入るカテゴリー見出しの文言で、商品ではないので無視する
+        if (/^[〜～~]ウニ[〜～~]$/.test(line)) return;
+
         // 宮津トリ貝の「・玉/代金NNNN」はサブバリアントの価格行。通常の「・品目」より先に判定する
         if (current && current.subVariants && /^[・･]?玉\/代金/.test(line)){
           const mm = line.match(/([\d,]+)\s*$/);
