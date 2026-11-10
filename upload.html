@@ -1631,7 +1631,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       if (/イカ|マダコ/.test(n)) return 'イカ';
       // 「イシガキダイ」は「ガキ」(牡蠣)を含むが魚なので、貝より先に高級魚・白身へ分類する
       if (/イシガキダイ/.test(n)) return '高級魚・白身';
-      if (/ガニ|カニ|エビ|えび|海老|ズワイ/.test(n)) return '甲殻類';
+      if (/ガニ|カニ|エビ|えび|海老|ズワイ|シャコ/.test(n)) return '甲殻類';
       // 「貝」の字が付く品目は無条件でこのカテゴリーに入れる(オイスター/牡蠣/カキ/ホタテ/蛤/アワビ・鮑のように「貝」の字が無いものも含める)
       if (/貝|[カガ]キ|オイスター|牡蠣|ホタテ|蛤|アワビ|鮑/.test(n)) return '貝';
       // 助子・筋子は白子・内臓カテゴリーへ
@@ -2609,7 +2609,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         const cat = asaJime ? '朝締め' : K.baseClassify(nm);
         // オオズワイ・イワシ・小肌は「1杯〜」「0.5cs〜」「1P〜」等の単位表記を残したいので、加工品と同様にkeepUnitTailする
         const lines = buildItemLines(group, { ...opts, keepUnitTail: cat === '加工品' || /オオズワイ|イワシ|小肌/.test(group.name) });
-        const isKani = /ガニ|カニ|エビ|えび|海老|ズワイ/.test(group.name);
+        const isKani = /ガニ|カニ|エビ|えび|海老|ズワイ|シャコ/.test(group.name);
         (categoryItems[cat] = categoryItems[cat]||[]).push({ lines, isKani });
       });
 
