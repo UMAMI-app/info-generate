@@ -1493,7 +1493,9 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       '新潟','富山','石川','福井','山梨','長野','岐阜','静岡','愛知','三重','滋賀','京都','大阪','兵庫','奈良','和歌山',
       '鳥取','島根','岡山','広島','山口','徳島','香川','愛媛','高知','福岡','佐賀','長崎','熊本','大分','宮崎','鹿児島','沖縄'];
     const FOREIGN = ['韓国','中国','ノルウェー','ロシア','ベトナム','チリ','アメリカ','台湾'];
-    const ORIGIN_NAMES = [...PREFS, ...FOREIGN];
+    // 「南淡路」のように、県名を省いて市町村名だけが産地として書かれることがある地名
+    const SUB_REGIONS = ['南淡路', '南あわじ'];
+    const ORIGIN_NAMES = [...PREFS, ...FOREIGN, ...SUB_REGIONS];
 
     // 「仙鳳趾」等、商品名としても使われるため産地の末尾に紛れ込みやすい語。
     // 他の地名の後ろに続く形でのみ切り落とす(例:「北海道厚岸 仙鳳趾」→「北海道・厚岸」。
@@ -1586,6 +1588,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       if (/^[都道府県]/.test(s.slice(matchEnd)) && !bestPref.endsWith(s[matchEnd])) matchEnd += 1;
       let rest = s.slice(matchEnd).trim();
       rest = rest.replace(/^[,、]\s*/, '');
+      // 「宮城産」のように県名のすぐ後に付く「産」は地名ではなく「〜産」の接尾語なので読み飛ばす
+      rest = rest.replace(/^産(?=[,、\s]|$)/, '');
       rest = stripOriginNoiseWords(rest);
 
       let place = '', trailingNote = '', bracketNote = '';
@@ -1605,7 +1609,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         place = rest;
       }
       const originDisplay = place ? `(${pref}・${place})` : `(${pref})`;
-      return { originDisplay, trailingNote, pref, bracketNote };
+      return { originDisplay, trailingNote, pref, bracketNote, place };
     }
 
     // ---------------- name normalization ----------------
@@ -1619,7 +1623,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     const ASAJIME_SPECIES = ['ハモ','メイタカレイ','天然ヒラメ','オコゼ','活天然タイ','アコウ','活イシダイ','アマガレイ','アマテガレイ'];
     const CATEGORY_ORDER = ['朝締め','ウニ','甲殻類・貝','青物・大衆魚','季節魚・回遊魚','高級魚・白身','細物','イカ','白子・内臓','加工品'];
     const CATEGORY_EMOJI = {
-      '朝締め':'✨','ウニ':'💥','甲殻類・貝':'🦪','貝':'🦪',
+      '朝締め':'✨','蟹':'🦀','ウニ':'💥','甲殻類・貝':'🦪','貝':'🦪',
       '青物・大衆魚':'🐟','季節魚・回遊魚':'🐡','高級魚・白身':'🐠','細物':'',
       'イカ':'🦑','白子・内臓':'','加工品':''
     };
@@ -1631,7 +1635,10 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       if (/イカ|マダコ/.test(n)) return 'イカ';
       // 「イシガキダイ」は「ガキ」(牡蠣)を含むが魚なので、貝より先に高級魚・白身へ分類する
       if (/イシガキダイ/.test(n)) return '高級魚・白身';
-      if (/ガニ|カニ|エビ|えび|海老|ズワイ|シャコ/.test(n)) return '甲殻類';
+      // カニ類(ズワイガニ系のオオズワイ含む)は専用の【蟹】カテゴリーへ。
+      // エビ・シャコは蟹ではないので従来通り甲殻類(貝と合算)のまま
+      if (/ガニ|カニ|ズワイ/.test(n)) return '蟹';
+      if (/エビ|えび|海老|シャコ/.test(n)) return '甲殻類';
       // 「貝」の字が付く品目は無条件でこのカテゴリーに入れる(オイスター/牡蠣/カキ/ホタテ/蛤/アワビ・鮑のように「貝」の字が無いものも含める)
       if (/貝|[カガ]キ|オイスター|牡蠣|ホタテ|蛤|アワビ|鮑/.test(n)) return '貝';
       // 助子・筋子は白子・内臓カテゴリーへ
@@ -1786,8 +1793,12 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       function pushLine(line){
         if (line === '兵庫淡路島'){ inKakouhin = true; return; }
 
-        // 「〜ウニ〜」はウニの品目が始まる前に入るカテゴリー見出しの文言で、商品ではないので無視する
-        if (/^[〜～~]ウニ[〜～~]$/.test(line)) return;
+        // 「〜ウニ〜」「〜フグ🐡〜」「〜牡蠣🦪〜」等は品目が始まる前に入るカテゴリー見出しの文言で、
+        // 商品ではないので無視する
+        if (/^[〜～~].+[〜～~]$/.test(line)) return;
+
+        // 「🆕」は新着を示す装飾の絵文字で分類には関係ないので、先頭に付いていたら取り除く
+        line = line.replace(/^🆕/, '');
 
         // 宮津トリ貝の「・玉/代金NNNN」はサブバリアントの価格行。通常の「・品目」より先に判定する
         if (current && current.subVariants && /^[・･]?玉\/代金/.test(line)){
@@ -1803,11 +1814,13 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           return;
         }
 
-        // 「◎品目名」で始まる丸ウニ系の価格行(・＠NNN,NNN円)は、通常の「・」新品目開始より先に判定する
-        if (current && current.isMaruUni && /^[・･][＠@]/.test(line)){
+        // 「◎品目名」で始まる丸ウニ・牡蠣系の価格行(「・＠NNN,NNN円」「・代NNN,NNN円」)は、
+        // 通常の「・」新品目開始より先に判定する
+        if (current && current.isMaruUni && /^[・･](代金?|[＠@])/.test(line)){
           const pm = line.match(/([\d,]+)/);
           if (pm) current.maruUniPrice = parseInt(pm[1].replace(/,/g,''),10);
           current.maruUniHasYen = /円/.test(line);
+          current.maruUniPriceKind = /^[・･](代金?)/.test(line) ? 'dai' : 'at';
           return;
         }
 
@@ -2146,28 +2159,64 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     }
 
     // ---------------- 仙鳳趾ムキ牡蠣(原稿の書式が特殊: 「（極大粒）」のようにグレードだけの行の
-    // 次にサイズ+価格行が来る。グレードは次のサイズ+価格行の頭に付けて1行にまとめる) ----------------
+    // 次にサイズ+価格行が来る。グレードは次のサイズ+価格行の頭に付けて1行にまとめる。
+    // 「・仙鳳趾ムキ牡蠣」(産地は別行のgroup.originLine、価格は各行に直書き)と
+    // 「◎仙鳳趾ムキ牡蠣」(産地はvariantsの先頭行、価格は「・代/・＠」でgroup.maruUniPrice)の
+    // 両方の書式に対応する ----------------
     function buildSenpojiMukigakiLines(group, opts){
       const { itemName } = K.extractNameAndOrigin(group.name);
-      const originInfo = K.parseOriginLine(group.originLine);
-      const lines = [`🔸${K.normalizeName(itemName)}`];
-      if (originInfo.originDisplay) lines.push(originInfo.originDisplay);
+      const nm = K.normalizeName(itemName);
+
+      let originInfo, contentVariants;
+      if (group.originLine){
+        originInfo = K.parseOriginLine(group.originLine);
+        contentVariants = group.variants;
+      } else {
+        // 「◎」形式は産地もvariantsの中に来るため、グレードだけの行(「（極大粒）」等)を除いた
+        // 数字を含まない行の中から県名を含む本当の産地行を探す
+        const noDigitRaws = [];
+        contentVariants = [];
+        group.variants.forEach(v => {
+          const raw = v.raw.trim();
+          if (raw && !/\d/.test(raw) && !/^[（(][^)）]+[)）]$/.test(raw)){
+            noDigitRaws.push(raw);
+          } else {
+            contentVariants.push(v);
+          }
+        });
+        const resolved = resolveOriginAmongLines(noDigitRaws);
+        originInfo = resolved.originInfo;
+        // 産地に使わなかった行(「特大粒」等)は内容行として先頭に戻す
+        contentVariants = [...resolved.contentLines.map(raw => ({ raw })), ...contentVariants];
+      }
+      // 商品名に既に含まれる地名(例:「仙鳳趾ムキ牡蠣」の「仙鳳趾」)が産地にも出てくる場合は、
+      // 重複するので産地側では県名だけにする
+      if (originInfo.place && nm.includes(originInfo.place)){
+        originInfo = { ...originInfo, originDisplay: originInfo.pref ? `(${originInfo.pref})` : '' };
+      }
+      const lines = [`🔸${nm}${originInfo.originDisplay || ''}`];
+      if (originInfo.bracketNote) lines.push(originInfo.bracketNote);
 
       let pendingGrade = null;
-      group.variants.forEach(v => {
+      contentVariants.forEach(v => {
         const raw = v.raw.trim();
         // 「（極大粒）」のようにその行だけでグレードを表す行は、次のサイズ+価格行の頭に付ける
         if (/^[（(][^)）]+[)）]$/.test(raw) && !/\d/.test(raw)){
           pendingGrade = raw.replace(/[（）]/g, ch => ch === '（' ? '(' : ')');
           return;
         }
-        const parsed = K.parseVariantLine(raw, opts);
+        // maruUni形式(「・代/・＠」で価格が別途ある)の場合、このサイズ行には価格が無い
         let text;
-        if (parsed.priceOk){
-          text = `${parsed.sizeText} ${parsed.priceStr}`;
-          if (parsed.tail) text += `  ${parsed.tail}`;
+        if (group.maruUniPrice != null){
+          text = raw;
         } else {
-          text = fallbackText(raw, opts);
+          const parsed = K.parseVariantLine(raw, opts);
+          if (parsed.priceOk){
+            text = `${parsed.sizeText} ${parsed.priceStr}`;
+            if (parsed.tail) text += `  ${parsed.tail}`;
+          } else {
+            text = fallbackText(raw, opts);
+          }
         }
         lines.push(pendingGrade ? `${pendingGrade} ${text}` : text);
         pendingGrade = null;
@@ -2175,6 +2224,11 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         // 「次のグレード名」(例:「(大粒)」)を、次のバリアントのグレードとして持ち越す
         if (v.extraNote) pendingGrade = `(${v.extraNote})`;
       });
+      if (group.maruUniPrice != null){
+        const price = K.calcPrice(group.maruUniPrice, opts.threshold, opts.lowMult, opts.highMult, opts.unit);
+        const unit = group.maruUniPriceKind === 'dai' ? 'pc' : '枚';
+        lines.push(`${fmtYen(price)}/${unit}`);
+      }
       return lines;
     }
 
@@ -2304,23 +2358,25 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     function buildFuguLines(group, opts){
       const name = group.name.replace(/🐡/g,'').trim();
       // 「・」形式は産地行がgroup.originLineに入るが、「◎」形式はvariantsの先頭行に入るため両対応する
-      let origin = '';
-      if (group.originLine){
-        const o = group.originLine.trim().replace(/[　\s,，、]+/g,'・');
-        origin = /.他$/.test(o) && !/・他$/.test(o) ? o.replace(/他$/,'・他') : o;
-      }
+      let originSrc = group.originLine || '';
       let size = '';
       group.variants.forEach(v => {
         const raw = v.raw.trim();
         if (!raw) return;
-        if (!/\d/.test(raw) && !origin){
-          const o = raw.replace(/[　\s,，、]+/g,'・');
-          origin = /.他$/.test(o) && !/・他$/.test(o) ? o.replace(/他$/,'・他') : o;
+        if (!/\d/.test(raw) && !originSrc){
+          originSrc = raw;
         } else if (!size){
           size = raw.replace(/㌔/g,'kg').replace(/[～~]/g,'〜');
         }
       });
-      const lines = [`🔸${name}${origin ? `(${origin})` : ''}`];
+      // 産地は他の品目と同じくK.parseOriginLineで県名+地名(「・」区切り)に正しく分解する。
+      // 県名が見つからない場合は、従来通り元の文字列をそのまま(・区切りで)使う
+      let originDisplay = originSrc ? K.parseOriginLine(originSrc).originDisplay : '';
+      if (!originDisplay && originSrc){
+        originDisplay = `(${originSrc.trim().replace(/[　\s,，、]+/g,'・')})`;
+      }
+      // 丸ウニ系と同様、産地表記が長い場合は見出しの次の行に改行して表記する
+      const lines = originDisplay.length > 7 ? [`🔸${name}`, originDisplay] : [`🔸${name}${originDisplay}`];
       let priceText = '⚠️要確認';
       const priceSrc = group.variants.map(v => v.priceLine || '').find(t => /\d/.test(t)) || '';
       const pm = priceSrc.match(/([\d,]+)/);
@@ -2329,6 +2385,67 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         priceText = `k${fmtYen(price)}`;
       }
       lines.push(`${size}　${priceText}`);
+      return lines;
+    }
+
+    // 複数の「数字を含まない行」の中から、県名を含む本当の産地行を探して産地として使い、
+    // それ以外(「特大粒」のような県名を含まない行)は内容行として返す。
+    // 県名を含む行が無い場合は見つからなかった最初の行をそのまま産地として使う
+    function resolveOriginAmongLines(candidateRaws){
+      let originInfo = null, originSrc = '';
+      const contentLines = [];
+      candidateRaws.forEach(raw => {
+        if (!originInfo){
+          const info = K.parseOriginLine(raw);
+          if (info.pref){ originSrc = raw; originInfo = info; return; }
+        }
+        contentLines.push(raw);
+      });
+      if (!originInfo && candidateRaws.length){
+        // 県名が1つも見つからなければ、最初の行をそのまま産地扱いにする(従来の挙動を維持)
+        originSrc = candidateRaws[0];
+        originInfo = { originDisplay: `(${originSrc})`, trailingNote: '', bracketNote: '', pref: '', place: '' };
+        return { originInfo, contentLines: candidateRaws.slice(1) };
+      }
+      if (!originInfo) originInfo = { originDisplay: '', trailingNote: '', bracketNote: '', pref: '', place: '' };
+      return { originInfo, contentLines };
+    }
+
+    // ---------------- 牡蠣・オイスター系(「◎品目名→産地→サイズ→・＠/・代NNN円」の書式。
+    // フグと同じ組み立てだが、カテゴリーは【ウニ】ではなく通常の貝・甲殻類分類に乗せる) ----------------
+    function buildKakiMaruLines(group, opts){
+      const name = group.name.replace(/🦪/g,'').trim();
+      const noDigitLines = [];
+      let size = '';
+      const extraDigitLines = [];
+      group.variants.forEach(v => {
+        let raw = v.raw.trim();
+        if (!raw) return;
+        // 「坂越海域〜（生食）」「宮城産（生食）」のように付く「(生食)」注記は不要なので落とす
+        raw = raw.replace(/[〜～~]?（生食）$/, '').trim();
+        if (!raw) return;
+        if (!/\d/.test(raw)){
+          noDigitLines.push(raw);
+        } else if (!size){
+          size = raw;
+        } else {
+          extraDigitLines.push(raw);
+        }
+      });
+      const { originInfo, contentLines } = resolveOriginAmongLines(noDigitLines);
+      const lines = [`🔸${name}${originInfo.originDisplay || ''}`];
+      if (originInfo.bracketNote) lines.push(originInfo.bracketNote);
+      let priceStr = '';
+      if (group.maruUniPrice != null){
+        const price = K.calcPrice(group.maruUniPrice, opts.threshold, opts.lowMult, opts.highMult, opts.unit);
+        const unit = group.maruUniPriceKind === 'dai' ? 'pc' : '枚';
+        priceStr = `${fmtYen(price)}/${unit}`;
+      }
+      // 「＠」(／枚)は価格をサイズと1行にまとめ、「代」(／pc)は価格を別行にする
+      const isAt = group.maruUniPriceKind !== 'dai';
+      const sizeParts = [originInfo.trailingNote, ...contentLines, size, ...extraDigitLines, isAt ? priceStr : ''].filter(Boolean);
+      if (sizeParts.length) lines.push(sizeParts.join('　'));
+      if (!isAt && priceStr) lines.push(priceStr);
       return lines;
     }
 
@@ -2369,7 +2486,12 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           if (pm){
             const price = K.calcPrice(parseInt(pm[2].replace(/,/g,''),10), opts.threshold, opts.lowMult, opts.highMult, opts.unit);
             const priceStr = pm[1] === '代金' ? `${fmtYen(price)}/pc` : `k${fmtYen(price)}`;
-            const sizeText = v.raw.trim().replace(/^＠/, '').replace(/^玉(?!\/)/, '玉/');
+            // 「⚫︎尾約1.6㌔」のように先頭に丸印が付く場合は、丸印とその直後の「尾」をまとめて落とす
+            const sizeText = v.raw.trim()
+              .replace(/^[⚫●]︎?\s*尾?/, '')
+              .replace(/^＠/, '')
+              .replace(/^玉(?!\/)/, '玉/')
+              .replace(/㌔/g, 'kg');
             return { sizeText, priceStr, tail: trimPcTail(pm[3]), priceOk:true, fullWidthSep:true };
           }
         }
@@ -2446,7 +2568,9 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         lines.push(line);
         if (group.variants[i].arrowNote) lines.push(group.variants[i].arrowNote);
       });
-      group.notes.forEach(n => lines.push(n));
+      // 「①尾より受注します」等の最少受注メモは、単位の「〜」表記などと同様の定型文なので表示しない
+      const dropNotePatterns = [/尾より受注します/, ...(opts.extraNoteDrops || [])];
+      group.notes.filter(n => !dropNotePatterns.some(re => re.test(n))).forEach(n => lines.push(n));
       return lines;
     }
 
@@ -2505,7 +2629,33 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           // 起こりうる)だけbuildFuguLinesを使い、「・天フグ宮城/福島」のようにサイズと価格が
           // 1行にまとまった通常形式は他の品目と同じ組み立てにする
           const hasFuguPriceLine = group.variants.some(v => v.priceLine);
-          fuguItems.push(hasFuguPriceLine ? buildFuguLines(group, opts) : buildItemLines(group, opts));
+          // 「身欠🉑」は【天然・養殖フグ🐡】見出し側に既に記載しているので、品目ごとには重複表示しない
+          fuguItems.push(hasFuguPriceLine ? buildFuguLines(group, opts) : buildItemLines(group, { ...opts, extraNoteDrops: [/身欠🉑/] }));
+          return;
+        }
+
+        // 開穴子・仙鳳趾ムキ牡蠣は専用の組み立て関数を使う。「◎」始まり(丸ウニ形式)で
+        // 来ることもあるので、丸ウニの汎用処理より先に判定する
+        if (/^開穴子/.test(group.name)){
+          const lines = buildKaianagoLines(group, opts);
+          const cat = K.baseClassify(K.normalizeName(K.extractNameAndOrigin(group.name).itemName));
+          (categoryItems[cat] = categoryItems[cat]||[]).push({ lines, isKani:false });
+          return;
+        }
+
+        if (/^仙鳳趾ムキ牡蠣/.test(group.name)){
+          const lines = buildSenpojiMukigakiLines(group, opts);
+          const cat = K.baseClassify(K.normalizeName(K.extractNameAndOrigin(group.name).itemName));
+          (categoryItems[cat] = categoryItems[cat]||[]).push({ lines, isKani:false });
+          return;
+        }
+
+        // 「◎サムライオイスター」等、◎始まりの牡蠣・オイスター類も専用の組み立てを使う
+        // (ウニではないので、丸ウニの汎用処理より先に判定して【ウニ】行きを避ける)
+        if (group.isMaruUni && /オイスター|カキ|牡蠣/.test(group.name)){
+          const lines = buildKakiMaruLines(group, opts);
+          const cat = K.baseClassify(K.normalizeName(K.extractNameAndOrigin(group.name).itemName));
+          (categoryItems[cat] = categoryItems[cat]||[]).push({ lines, isKani:false });
           return;
         }
 
@@ -2572,19 +2722,6 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           return;
         }
 
-        if (/^開穴子/.test(group.name)){
-          const lines = buildKaianagoLines(group, opts);
-          const cat = K.baseClassify(K.normalizeName(K.extractNameAndOrigin(group.name).itemName));
-          (categoryItems[cat] = categoryItems[cat]||[]).push({ lines, isKani:false });
-          return;
-        }
-
-        if (/^仙鳳趾ムキ牡蠣/.test(group.name)){
-          const lines = buildSenpojiMukigakiLines(group, opts);
-          const cat = K.baseClassify(K.normalizeName(K.extractNameAndOrigin(group.name).itemName));
-          (categoryItems[cat] = categoryItems[cat]||[]).push({ lines, isKani:false });
-          return;
-        }
 
         if (group.forcedCategory === '加工品'){
           kakouhinRaw.push(group);
@@ -2714,6 +2851,11 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       }
 
       const catBlocks = [];
+      // 蟹(カニ・ズワイ系)は専用カテゴリーとして一番上(朝締めより上)に記載する
+      const kaniOnlyItems = groupOozuwaiAfterKani(categoryItems['蟹'] || []);
+      if (kaniOnlyItems.length){
+        catBlocks.push(`【蟹${K.CATEGORY_EMOJI['蟹']}】\n\n` + kaniOnlyItems.map(it=>it.lines.join('\n')).join('\n\n'));
+      }
       const asaJimeItems = categoryItems['朝締め'] || [];
       if (asaJimeItems.length){
         catBlocks.push(`【朝締め${K.CATEGORY_EMOJI['朝締め']}】\n\n` + asaJimeItems.map(it=>it.lines.join('\n')).join('\n\n'));
