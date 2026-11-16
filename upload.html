@@ -1709,7 +1709,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
 
       // 「500g×1P 3,600」のように「サイズ×個数単位 価格」の形式(×の直後は個数単位で、
       // 価格はスペースを挟んだ別の数字)。×プレフィックス判定(単純な「×価格」)より先に試す
-      m = s.match(/^(.*?×\d*(?:枚|ケ|ヶ|玉|尾|(?<!S)P|個|杯))\s+([\d,]+)\s*(.*)$/);
+      m = s.match(/^(.*?×\d*(?:枚|ケ|ヶ|玉|尾|(?<![SU])P|個|杯))\s+([\d,]+)\s*(.*)$/);
       if (m){
         const before = m[1].trim();
         const val = parseInt(m[2].replace(/,/g,''),10);
@@ -1729,8 +1729,9 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       }
 
       // 数量単位に数字が直接くっついた価格（1枚14,000 / 1ケ850 / 1玉250 / 1尾1,250 / 1P 4,200 / 1杯2,400 のように間に空白がある場合も許容）
-      // ただし「SP」(グレード表記)の「P」を数量単位と誤認しないよう、直前が「S」のPは除外する
-      m = s.match(/^(.*?)(\d*(?:枚|ケ|ヶ|玉|尾|(?<!S)P|個|杯))\s*([\d,]+)\s*(.*)$/);
+      // ただし「SP」(グレード表記)や「200gUP」(重量の「以上」表記)の「P」を数量単位と誤認しないよう、
+      // 直前が「S」または「U」のPは除外する
+      m = s.match(/^(.*?)(\d*(?:枚|ケ|ヶ|玉|尾|(?<![SU])P|個|杯))\s*([\d,]+)\s*(.*)$/);
       if (m){
         const before = m[1].trim();
         const unitTok = m[2].replace(/ケ/, 'ヶ');
@@ -1748,6 +1749,19 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         const { text: tail } = stripUnitTail(m[3].trim(), opts.keepUnitTail);
         const newVal = calcPrice(val, opts.threshold, opts.lowMult, opts.highMult, opts.unit);
         return { sizeText: before, priceStr: `${fmtNum(newVal)}/cs`, tail, priceOk:true };
+      }
+
+      // 蟹等で「700g前後 14,000  1枚〜」のように価格の後ろに「N枚〜」等の個数単位が付く場合、
+      // それはキロ単価ではなくその個数あたりの価格そのものを表す(「k」プレフィックスが無いのはそのため)。
+      // 「×」で単位と価格が結ばれる通常形式と表記を揃え、「サイズ 1枚 ×価格」の形にする
+      m = s.match(/^(.*?)\s+([\d,]+)\s+(\d*)(枚|ケ|ヶ|玉|尾|P|個|杯)\s*[〜～~]?\s*$/);
+      if (m){
+        const before = m[1].trim();
+        const val = parseInt(m[2].replace(/,/g,''),10);
+        const qty = m[3] || '1';
+        const unitTok = `${qty}${m[4].replace(/ケ/, 'ヶ')}`;
+        const newVal = calcPrice(val, opts.threshold, opts.lowMult, opts.highMult, opts.unit);
+        return { sizeText: `${before} ${unitTok}`.trim(), priceStr: `×${fmtNum(newVal)}`, tail: '', priceOk:true };
       }
 
       // 「k」等のプレフィックスが無い裸の数字も価格として扱う（金額自体は合っている前提で進める）
@@ -1796,6 +1810,9 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         // 「〜ウニ〜」「〜フグ🐡〜」「〜牡蠣🦪〜」等は品目が始まる前に入るカテゴリー見出しの文言で、
         // 商品ではないので無視する
         if (/^[〜～~].+[〜～~]$/.test(line)) return;
+
+        // 「↓↓カニ🦀🦀🦀」「↓↓ウニ」のような矢印付きのカテゴリー見出しも同様に無視する
+        if (/^↓↓/.test(line)) return;
 
         // 「🆕」は新着を示す装飾の絵文字で分類には関係ないので、先頭に付いていたら取り除く
         line = line.replace(/^🆕/, '');
@@ -2283,8 +2300,9 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       // 品目名の（）内のコンマは「・」に統一する(例:「（松浦,花箱）」→「（松浦・花箱）」)
       const name = group.name.replace(/[（(]([^)）]*)[)）]/g, (m, inner) => `（${inner.replace(/,/g,'・')}）`);
 
-      // 「北ウニNo.①」「塩水ウニNo.②」のように番号だけの見出しは、中身の行から品目名を作る
-      const isNumbered = /No\.?\s*[①-⑩0-9]/.test(name);
+      // 「北ウニNo.①」「塩水ウニNo.②」のように番号だけの見出しは、中身の行から品目名を作る。
+      // 「北ウニ」「塩水ウニ」だけの見出し(番号無し)も同様に、実際の品目名ではないので中身の行から作る
+      const isNumbered = /No\.?\s*[①-⑩0-9]/.test(name) || /^(北ウニ|塩水ウニ)$/.test(name);
       let header = `🔸${name}`;
       let originLine = '';
       let startIdx = 0;
@@ -2306,7 +2324,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       const contentLines = [];
       for (let i = startIdx; i < group.variants.length; i++){
         const v = group.variants[i];
-        const raw = v.raw.trim();
+        // 「250ｇ」のように全角の「ｇ」が使われることがあるので、サイズとして拾えるよう半角に揃える
+        const raw = v.raw.trim().replace(/(\d)ｇ/g, '$1g');
         let text;
         if (!size && /^約?\d+g?\s*[～〜~\-]\s*\d+g(前後)?$|^約?\d+g前後$/.test(raw)){
           // 「約60～70g前後」「50g前後」のようにサイズだけの行
