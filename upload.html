@@ -1248,7 +1248,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
   function itemLines(it){
     const tagPart = it.tag ? `【${it.tag}】` : '';
     const originPart = it.origin ? `／${it.origin}` : '';
-    const line1 = `🔸${tagPart}${it.name}${originPart}`;
+    const line1 = `🔹${tagPart}${it.name}${originPart}`;
     const priceStr = formatPrice(it.price);
     const lines = [line1];
     if (it.sizeMain){
@@ -1287,8 +1287,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     const originPart = group.origin ? `／${group.origin}` : '';
     const shouldBreakAfterTag = group.tag && (group.tag.length >= TAG_BREAK_MIN_LENGTH || TAG_BREAK_FORCED.includes(group.tag));
     const lines = shouldBreakAfterTag
-      ? [`🔸${tagPart}`, `${group.name}${originPart}`]
-      : [`🔸${tagPart}${group.name}${originPart}`];
+      ? [`🔹${tagPart}`, `${group.name}${originPart}`]
+      : [`🔹${tagPart}${group.name}${originPart}`];
     group.items.forEach(it=>{
       const priceStr = formatPrice(it.price);
       if (it.sizeMain){
@@ -1939,6 +1939,15 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     const PRICE_OPTS = { threshold: 10000, lowMult: 1.15, highMult: 1.10, unit: 100 };
     function fmtYen(n){ return n.toLocaleString('ja-JP'); }
 
+    // 「※10入1.5k前後 4,500cs」のような※注記は通常そのまま保持するが、
+    // 末尾の「NNNcs」(ケース単価)だけは通常の価格と同様に倍率計算してから元の文言に戻す
+    function applyCsNotePrice(note, opts){
+      const m = note.match(/^(.*?)([\d,]+)cs(\s*)$/);
+      if (!m) return note;
+      const price = K.calcPrice(parseInt(m[2].replace(/,/g,''),10), opts.threshold, opts.lowMult, opts.highMult, opts.unit);
+      return `${m[1]}${fmtYen(price)}cs${m[3]}`;
+    }
+
     function resolveNameOrigin(group){
       if (group.originLine){
         const fromName = K.extractNameAndOrigin(group.name);
@@ -2100,7 +2109,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       const raw = v.raw.trim().replace(/^[★☆]/, '').replace(/^[①②③④⑤⑥⑦⑧⑨⑩]/, '').trim();
       const m = raw.match(/^(.*?)(\d+g[〜~\-]?\d*g?)\s*(?:1枚)?\s*[×xX]?\s*([\d,]+)/);
       if (!m) return null;
-      let namePart = m[1].trim();
+      // 「(無添加)」は品目名の分類に関係ない装飾的な注記なので、先頭に付いていたら取り除く
+      let namePart = m[1].trim().replace(/^[（(]無添加[)）]\s*/, '');
       // 名前の末尾に付く「SP/上/並」はグレード表記なので、産地判定には含めず、
       // 産地表記の外側(末尾)に付け直す(例:「佐藤白宮城SP」→「佐藤白(宮城)SP」)
       let gradeSuffix = '';
@@ -2124,13 +2134,15 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     // 産地が名前の前に付く書き方(「愛媛今治 赤ウニ」等)もあり自動抽出が難しいため、
     // 品目名はグループ名をそのまま使う
     function buildUniItemFromGroupName(group, regularVariants, opts){
+      // 「(無添加)」は品目名の分類に関係ない装飾的な注記なので、先頭に付いていたら取り除く
+      const name = group.name.replace(/^[（(]無添加[)）]\s*/, '');
       // 名前に「【】」が付いている場合は改行してから【】部分を表記する
-      const bracketMatch = group.name.match(/^(.*?)\s*(【[^】]*】.*)$/);
+      const bracketMatch = name.match(/^(.*?)\s*(【[^】]*】.*)$/);
       const lines = bracketMatch
         ? [`🔸${bracketMatch[1].trim()}`, bracketMatch[2].trim()]
-        : [`🔸${group.name}`];
+        : [`🔸${name}`];
       // 「塩水」と付くウニは「円/枚」ではなく「円/pc」表記にする
-      const uniUnit = /塩水/.test(group.name) ? 'pc' : '枚';
+      const uniUnit = /塩水/.test(name) ? 'pc' : '枚';
       regularVariants.forEach(v => {
         const p = K.parseVariantLine(v.raw, opts);
         let line;
@@ -2298,7 +2310,9 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
     // 原稿の金額をそのまま使う(値上げ計算はしない)特殊な書式) ----------------
     function buildMaruUniLines(group, opts){
       // 品目名の（）内のコンマは「・」に統一する(例:「（松浦,花箱）」→「（松浦・花箱）」)
-      const name = group.name.replace(/[（(]([^)）]*)[)）]/g, (m, inner) => `（${inner.replace(/,/g,'・')}）`);
+      // 「(無添加)」は品目名の分類に関係ない装飾的な注記なので、先頭に付いていたら取り除く
+      const name = group.name.replace(/[（(]([^)）]*)[)）]/g, (m, inner) => `（${inner.replace(/,/g,'・')}）`)
+        .replace(/^[（(]無添加[)）]\s*/, '');
 
       // 「北ウニNo.①」「塩水ウニNo.②」のように番号だけの見出しは、中身の行から品目名を作る。
       // 「北ウニ」「塩水ウニ」だけの見出し(番号無し)も同様に、実際の品目名ではないので中身の行から作る
@@ -2346,10 +2360,14 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
 
       if (isNumbered && contentLines.length){
         // 1行目を品目名にし、短い【グレード】(例:【黄上】)は名前の後ろに続け、
-        // 長い産地・品種(例:【ロシアバフン】)は次の行に改行する
-        let itemName = contentLines[0];
+        // 長い産地・品種(例:【函館ムラサキ】)は次の行に改行する
+        let itemName = contentLines[0].replace(/^[（(]無添加[)）]\s*/, '');
         const rest = [];
-        contentLines.slice(1).forEach(t => {
+        // 1行目に「名前【長い産地・品種】」のように【】が混在している場合も、同様に改行対象にする
+        const inlineBracket = itemName.match(/^(.*?)\s*(【[^】]*】)$/);
+        const pendingBrackets = inlineBracket ? [inlineBracket[2]] : [];
+        if (inlineBracket) itemName = inlineBracket[1].trim();
+        pendingBrackets.concat(contentLines.slice(1)).forEach(t => {
           const bm = t.match(/^【([^】]+)】$/);
           if (bm && bm[1].length <= 3 && !/【/.test(itemName)) itemName += t;
           else rest.push(t);
@@ -2529,6 +2547,20 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         return K.parseVariantLine(v.raw, opts);
       });
 
+      // 蟹は「1枚×NNN」ではなく「NNN/枚」表記にする(キロ単価ではなく1枚あたりの価格のため)
+      if (/ガニ|カニ|ズワイ/.test(itemName)){
+        parsed.forEach(p => {
+          if (!p.priceOk) return;
+          const sm = p.sizeText.match(/^(.*?)\s*\d*枚$/);
+          const pm = p.priceStr.match(/^×([\d,]+)$/);
+          if (sm && pm){
+            p.sizeText = sm[1].trim();
+            p.priceStr = `${pm[1]}/枚`;
+            p.fullWidthSep = true;
+          }
+        });
+      }
+
       // 全バリアントが同じ「(先頭カッコ)」を共有していたら見出し行へ引き上げる
       let hoisted = '';
       if (parsed.length > 1 && parsed.every(p => p.priceOk)){
@@ -2589,7 +2621,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       });
       // 「①尾より受注します」等の最少受注メモは、単位の「〜」表記などと同様の定型文なので表示しない
       const dropNotePatterns = [/尾より受注します/, ...(opts.extraNoteDrops || [])];
-      group.notes.filter(n => !dropNotePatterns.some(re => re.test(n))).forEach(n => lines.push(n));
+      group.notes.filter(n => !dropNotePatterns.some(re => re.test(n))).forEach(n => lines.push(applyCsNotePrice(n, opts)));
       return lines;
     }
 
