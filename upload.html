@@ -1637,7 +1637,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       if (/イシガキダイ/.test(n)) return '高級魚・白身';
       // カニ類(ズワイガニ系のオオズワイ含む)は専用の【蟹】カテゴリーへ。
       // エビ・シャコは蟹ではないので従来通り甲殻類(貝と合算)のまま
-      if (/ガニ|カニ|ズワイ/.test(n)) return '蟹';
+      if (/ガニ|カニ|ズワイ|松葉/.test(n)) return '蟹';
       if (/エビ|えび|海老|シャコ/.test(n)) return '甲殻類';
       // 「貝」の字が付く品目は無条件でこのカテゴリーに入れる(オイスター/牡蠣/カキ/ホタテ/蛤/アワビ・鮑のように「貝」の字が無いものも含める)
       if (/貝|[カガ]キ|オイスター|牡蠣|ホタテ|蛤|アワビ|鮑/.test(n)) return '貝';
@@ -1846,6 +1846,19 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           startGroup(line.slice(1));
           return;
         }
+        // 商品名の頭に「⭐️」が付くことがあるので、付いていても新しい品目の開始とみなす
+        if (line.startsWith('⭐')){
+          const text = line.replace(/^⭐️?\s*/, '');
+          const tagM = text.match(/【[^】]+】/);
+          startGroup(text);
+          if (tagM){
+            // 【船上活〆】のようなタグが付く場合、タグ以外は産地で、品目名は次の行に来る
+            current.starTag = tagM[0];
+            current.starOrigin = text.replace(tagM[0], '').trim();
+            current.pendingName = true;
+          }
+          return;
+        }
         if (line.startsWith('宮津')){
           startGroup(line);
           current.isMiyazu = true;
@@ -1870,6 +1883,14 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           return;
         }
         if (!current) return;
+
+        // 「⭐️噴火湾 【船上活〆】」の次行に品目名が来る書式(産地→品目名の順)。
+        // 品目名の行を見つけたらグループ名に差し替える
+        if (current.pendingName && !/\d/.test(line) && !/^[↑※→（(]/.test(line)){
+          current.name = line;
+          current.pendingName = false;
+          return;
+        }
 
         if (line.startsWith('↑')){
           if (line.includes('朝締め') || line.includes('朝〆')){
@@ -2355,6 +2376,8 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           }
         }
         if (v.extraNote) text = text ? `${text}（${v.extraNote}）` : `（${v.extraNote}）`;
+        // 番号見出しの品目では、品目名に含まれる「（無添加）」だけの行は不要
+        if (isNumbered && /^[（(]無添加[)）]$/.test(text)) text = '';
         if (text) contentLines.push(text);
       }
 
@@ -2486,6 +2509,42 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       return lines;
     }
 
+    // ---------------- ⭐️始まりで「㌔NNN」の価格行が別行になっている品目
+    // (例:「⭐️噴火湾 【船上活〆】/あん肝/北海道,噴火湾/0.5～0.8kg前後サイズ/・㌔28,000」) ----------------
+    function buildStarKiloLines(group, opts){
+      const originSrc = group.originLine || group.starOrigin || '';
+      const originInfo = originSrc ? K.parseOriginLine(originSrc.trim()) : { originDisplay:'' };
+      const lines = [`🔸${K.normalizeName(group.name)}${originInfo.originDisplay || ''}`, group.starTag];
+      group.variants.forEach(v => {
+        const size = v.raw.trim().replace(/前後サイズ/,'前後').replace(/サイズ$/,'');
+        const pm = v.priceLine ? v.priceLine.match(/([\d,]+)/) : null;
+        if (pm){
+          const price = K.calcPrice(parseInt(pm[1].replace(/,/g,''),10), opts.threshold, opts.lowMult, opts.highMult, opts.unit);
+          lines.push(`${size}　k${fmtYen(price)}`);
+        } else {
+          lines.push(fallbackText(v.raw, opts));
+        }
+      });
+      return lines;
+    }
+
+    // ---------------- 白甘鯛(「・白甘鯛南淡路,由良漁協」「①1.0㌔/㌔13,800」の特殊表記) ----------------
+    function buildShiroAmadaiLines(group, opts){
+      const origin = group.name.replace(/^白甘鯛/, '').split(/[,，、]/).map(t=>t.trim()).filter(Boolean).join('・');
+      const lines = [`🔸白甘鯛${origin ? `(${origin})` : ''}`];
+      group.variants.forEach(v => {
+        const raw = v.raw.trim().replace(/^[①-⑩]/, '').trim();
+        const m = raw.match(/^([\d.]+)\s*(?:㌔|kg|キロ)\s*(?:\/\s*(?:㌔|kg)\s*)?([\d,]+)/i);
+        if (m){
+          const price = K.calcPrice(parseInt(m[2].replace(/,/g,''),10), opts.threshold, opts.lowMult, opts.highMult, opts.unit);
+          lines.push(`${m[1]}kg  k${fmtYen(price)}`);
+        } else {
+          lines.push(fallbackText(v.raw, opts));
+        }
+      });
+      return lines;
+    }
+
     // 名前の文字数に関わらず、産地は必ず改行して次の行に記載したい品目
     const FORCE_ORIGIN_NEWLINE_PREFIXES = ['活天然タイ', '仙鳳趾ムキ牡蠣'];
 
@@ -2548,7 +2607,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
       });
 
       // 蟹は「1枚×NNN」ではなく「NNN/枚」表記にする(キロ単価ではなく1枚あたりの価格のため)
-      if (/ガニ|カニ|ズワイ/.test(itemName)){
+      if (/ガニ|カニ|ズワイ|松葉/.test(itemName)){
         parsed.forEach(p => {
           if (!p.priceOk) return;
           const sm = p.sizeText.match(/^(.*?)\s*\d*枚$/);
@@ -2573,6 +2632,9 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
           parsed.forEach(p => { p.sizeText = p.sizeText.replace(/^[（(][^)）]+[)）]\s*/, ''); });
         }
       }
+
+      // 「前後サイズ」の「サイズ」は不要
+      parsed.forEach(p => { if (p.sizeText) p.sizeText = p.sizeText.replace(/前後サイズ/g,'前後'); });
 
       // 括弧なしで先頭に付く「SP」は「(上)」等と表記を揃えるため「(SP)」にする
       parsed.forEach(p => {
@@ -2687,6 +2749,13 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
 
         // 開穴子・仙鳳趾ムキ牡蠣は専用の組み立て関数を使う。「◎」始まり(丸ウニ形式)で
         // 来ることもあるので、丸ウニの汎用処理より先に判定する
+        if (group.starTag || /^白甘鯛/.test(group.name)){
+          const lines = group.starTag ? buildStarKiloLines(group, opts) : buildShiroAmadaiLines(group, opts);
+          const cat = K.baseClassify(K.normalizeName(group.name));
+          (categoryItems[cat] = categoryItems[cat]||[]).push({ lines, isKani:false });
+          return;
+        }
+
         if (/^開穴子/.test(group.name)){
           const lines = buildKaianagoLines(group, opts);
           const cat = K.baseClassify(K.normalizeName(K.extractNameAndOrigin(group.name).itemName));
@@ -2797,7 +2866,7 @@ numbers_to_tsv.build_tsv_from_numbers('/tmp/uploaded.numbers')
         const cat = asaJime ? '朝締め' : K.baseClassify(nm);
         // オオズワイ・イワシ・小肌は「1杯〜」「0.5cs〜」「1P〜」等の単位表記を残したいので、加工品と同様にkeepUnitTailする
         const lines = buildItemLines(group, { ...opts, keepUnitTail: cat === '加工品' || /オオズワイ|イワシ|小肌/.test(group.name) });
-        const isKani = /ガニ|カニ|エビ|えび|海老|ズワイ|シャコ/.test(group.name);
+        const isKani = /ガニ|カニ|エビ|えび|海老|ズワイ|シャコ|松葉/.test(group.name);
         (categoryItems[cat] = categoryItems[cat]||[]).push({ lines, isKani });
       });
 
